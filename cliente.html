@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meus Chamados em Aberto</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="assets/styles/main.css">
+</head>
+<body class="bg-light">
+    <header class="bg-white border-bottom shadow-sm">
+        <div class="container py-3 d-flex justify-content-between align-items-center">
+            <div>
+                <h1 class="h4 mb-0 fw-semibold text-primary">Chamados do Cliente</h1>
+                <p class="text-muted mb-0">Visualize e atualize apenas suas solicitações em aberto.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <a href="create.html" class="btn btn-primary">Criar chamado</a>
+                <a href="login.html" class="btn btn-outline-secondary" id="btn-trocar-usuario-cliente">Trocar usuário</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container py-4" id="pagina-cliente">
+        <div class="row mb-3">
+            <div class="col-12 col-lg-8">
+                <div class="alert alert-info mb-0">
+                    Após o login, somente os chamados abertos vinculados ao seu usuário serão exibidos para edição.
+                </div>
+            </div>
+        </div>
+        <div class="row g-3" id="lista-chamados-cliente"></div>
+    </main>
+
+    <footer class="border-top bg-white py-3 mt-4">
+        <div class="container d-flex justify-content-between align-items-center">
+            <span class="text-muted small">Central de Chamados - Cliente</span>
+            <span class="text-muted small">Apenas chamados em aberto</span>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="assets/scripts/main.js"></script>
+</body>
+</html>
