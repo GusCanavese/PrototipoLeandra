@@ -1,4 +1,4 @@
-const chamados = [
+const CHAMADOS_INICIAIS = [
     {
         id: 'CH-1024',
         client: 'Clínica Horizonte',
@@ -58,6 +58,10 @@ const chamados = [
     }
 ];
 
+const CHAVE_STORAGE_CHAMADOS = 'chamadosRegistrados';
+const CANAL_ATUALIZACAO_CHAMADOS = 'chamadosAtualizados';
+let chamados = [];
+
 const filtros = {
     client: '',
     summary: '',
@@ -74,6 +78,42 @@ const credenciaisLogin = {
 
 const CHAVE_STORAGE_LOGIN = 'usuarioAutenticado';
 let usuarioAutenticado = null;
+
+function carregarChamadosSalvos() {
+    if (typeof localStorage === 'undefined') {
+        chamados = [...CHAMADOS_INICIAIS];
+        return;
+    }
+
+    try {
+        const dados = localStorage.getItem(CHAVE_STORAGE_CHAMADOS);
+        if (dados) {
+            const chamadosSalvos = JSON.parse(dados);
+            if (Array.isArray(chamadosSalvos) && chamadosSalvos.length) {
+                chamados = chamadosSalvos;
+                return;
+            }
+        }
+    } catch (erro) {
+        console.error('Erro ao ler chamados salvos', erro);
+    }
+
+    chamados = [...CHAMADOS_INICIAIS];
+    salvarChamados();
+}
+
+function salvarChamados(chamadosAtualizados = chamados, atualizarTela = true) {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CHAVE_STORAGE_CHAMADOS, JSON.stringify(chamadosAtualizados));
+    if (atualizarTela) {
+        atualizarTelaComChamadosAtualizados();
+    }
+    if (typeof BroadcastChannel !== 'undefined') {
+        const canal = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
+        canal.postMessage({ atualizadoEm: Date.now() });
+        canal.close();
+    }
+}
 
 function obterUsuarioSalvo() {
     try {
@@ -164,7 +204,7 @@ function renderChamadosTabela() {
         const atendePrioridade = filtros.priority ? chamado.priority === filtros.priority : true;
         const atendeStatus = filtros.status ? chamado.status === filtros.status : true;
 
-        return atendCliente && atendeResumo && atendeUltima && atendeAbertura && atendePrioridade && atendeStatus;
+        return atendeCliente && atendeResumo && atendeUltima && atendeAbertura && atendePrioridade && atendeStatus;
     });
 
     chamadosFiltrados.forEach((chamado) => {
@@ -269,6 +309,32 @@ function renderChamadosAbertos() {
 
             grid.appendChild(coluna);
         });
+}
+
+function atualizarTelaComChamadosAtualizados() {
+    const paginaDetalhes = document.getElementById('detalhes-chamado');
+    const paginaListaTecnico = document.getElementById('table-chamados');
+    const paginaCliente = document.getElementById('pagina-cliente');
+
+    if (paginaListaTecnico) {
+        renderChamadosAbertos();
+        renderChamadosTabela();
+    }
+
+    if (paginaCliente) {
+        renderChamadosClienteAbertos();
+    }
+
+    if (paginaDetalhes) {
+        const parametros = new URLSearchParams(window.location.search);
+        const idChamado = parametros.get('id') || chamados[0]?.id;
+        if (!idChamado) return;
+        const chamado = obterChamadoPorId(idChamado);
+        if (!chamado) return;
+        preencherCabecalhoChamado(chamado);
+        preencherHistorico(chamado);
+        preencherAnexos(chamado);
+    }
 }
 
 function registrarFiltros() {
@@ -528,6 +594,7 @@ function registrarFormularioAtualizacao(chamado) {
         chamado.updates.unshift(novaAtualizacao);
         chamado.priority = prioridadeSelecionada;
         chamado.lastUpdate = novaAtualizacao.date;
+        salvarChamados();
 
         preencherCabecalhoChamado(chamado);
         preencherHistorico(chamado);
@@ -627,6 +694,7 @@ function registrarFormularioCriacao() {
         };
 
         chamados.unshift(novoChamado);
+        salvarChamados();
 
         if (alerta) {
             alerta.className = 'alert alert-success';
@@ -673,6 +741,7 @@ function carregarDetalhesChamado() {
 
 function inicializar() {
     definirUsuarioAutenticadoSeSalvo();
+    carregarChamadosSalvos();
     configurarTelaLogin();
 
     const paginaDetalhes = document.getElementById('detalhes-chamado');
@@ -732,6 +801,20 @@ function inicializar() {
 
         atualizarPainelIdentificacao();
         carregarDetalhesChamado();
+    }
+
+    window.addEventListener('storage', (evento) => {
+        if (evento.key !== CHAVE_STORAGE_CHAMADOS) return;
+        carregarChamadosSalvos();
+        atualizarTelaComChamadosAtualizados();
+    });
+
+    if (typeof BroadcastChannel !== 'undefined') {
+        const canal = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
+        canal.addEventListener('message', () => {
+            carregarChamadosSalvos();
+            atualizarTelaComChamadosAtualizados();
+        });
     }
 }
 
