@@ -85,6 +85,34 @@ function formatarDataHoraAtual() {
   return new Date().toLocaleString("pt-BR");
 }
 
+function lerArquivoComoDataUrl(arquivo) {
+  return new Promise((resolve, reject) => {
+    const leitor = new FileReader();
+    leitor.onload = () => resolve(leitor.result);
+    leitor.onerror = () => reject(new Error("Falha ao ler arquivo anexado."));
+    leitor.readAsDataURL(arquivo);
+  });
+}
+
+function normalizarAnexo(anexo) {
+  if (!anexo) return null;
+  if (typeof anexo === "string") return { name: anexo, content: null };
+  if (typeof anexo === "object" && anexo.name) return { name: anexo.name, content: anexo.content || null };
+  return null;
+}
+
+function renderizarAnexosComDownload(anexos = []) {
+  const anexosNormalizados = anexos.map(normalizarAnexo).filter(Boolean);
+  if (!anexosNormalizados.length) return "";
+
+  return anexosNormalizados
+    .map((anexo) => {
+      if (!anexo.content) return `<span class="text-muted">${anexo.name}</span>`;
+      return `<a href="${anexo.content}" download="${anexo.name}">${anexo.name}</a>`;
+    })
+    .join(", ");
+}
+
 function carregarChamadosSalvos() {
   try {
     const dados = localStorage.getItem(CHAVE_STORAGE_CHAMADOS);
@@ -267,7 +295,7 @@ function preencherHistorico(chamado) {
 
   chamado.updates.forEach((u) => {
     const anexos = (u.attachments || []).length
-      ? `<div class="small mt-2"><strong>Anexos:</strong> ${(u.attachments || []).join(", ")}</div>`
+      ? `<div class="small mt-2"><strong>Anexos:</strong> ${renderizarAnexosComDownload(u.attachments || [])}</div>`
       : "";
     const item = document.createElement("div");
     item.className = "timeline-item";
@@ -279,9 +307,14 @@ function preencherHistorico(chamado) {
 function preencherAnexos(chamado) {
   const lista = document.getElementById("lista-anexos");
   if (!lista) return;
-  const anexos = chamado.updates.flatMap((u) => u.attachments || []);
+  const anexos = chamado.updates.flatMap((u) => u.attachments || []).map(normalizarAnexo).filter(Boolean);
   lista.innerHTML = anexos.length
-    ? anexos.map((a) => `<li class="list-group-item">${a}</li>`).join("")
+    ? anexos
+        .map((anexo) => {
+          if (!anexo.content) return `<li class="list-group-item text-muted">${anexo.name}</li>`;
+          return `<li class="list-group-item"><a href="${anexo.content}" download="${anexo.name}">${anexo.name}</a></li>`;
+        })
+        .join("")
     : '<li class="list-group-item">Nenhum anexo registrado.</li>';
 }
 
@@ -299,17 +332,20 @@ function registrarFormularioAtualizacao(chamado) {
     document.getElementById("prioridadeAtualizacao").value = chamado.priority;
   }
 
-  form.addEventListener("submit", (evento) => {
+  form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
     const descricao = document.getElementById("descricaoAtualizacao").value.trim();
     if (!descricao) return;
     const prioridade = document.getElementById("prioridadeAtualizacao").value;
     const arquivo = document.getElementById("anexoAtualizacao").files[0];
+    const anexoSerializado = arquivo
+      ? [{ name: arquivo.name, content: await lerArquivoComoDataUrl(arquivo) }]
+      : [];
     const nova = {
       author: usuarioAutenticado?.tipo || "Técnico",
       message: descricao,
       date: formatarDataHoraAtual(),
-      attachments: arquivo ? [arquivo.name] : [],
+      attachments: anexoSerializado,
     };
     chamado.updates.unshift(nova);
     chamado.priority = usuarioAutenticado?.tipo === "Cliente" ? chamado.priority : prioridade;
@@ -366,13 +402,18 @@ function registrarFormularioCriacao() {
     }
   });
 
-  form.addEventListener("submit", (evento) => {
+  form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
     if (usuarioAutenticado?.tipo !== "Técnico") return;
 
     const dataAtual = new Date();
     const dataFormatada = dataAtual.toLocaleString("pt-BR");
     const descricao = document.getElementById("campo-descricao").value.trim();
+
+    const arquivoAnexado = document.getElementById("campo-anexo").files[0];
+    const anexoInicial = arquivoAnexado
+      ? [{ name: arquivoAnexado.name, content: await lerArquivoComoDataUrl(arquivoAnexado) }]
+      : [];
 
     const novoChamado = {
       id: gerarNovoIdChamado(),
@@ -393,9 +434,7 @@ function registrarFormularioCriacao() {
           author: usuarioAutenticado.tipo,
           message: descricao,
           date: dataFormatada,
-          attachments: document.getElementById("campo-anexo").files[0]
-            ? [document.getElementById("campo-anexo").files[0].name]
-            : [],
+          attachments: anexoInicial,
         },
       ],
     };
@@ -426,16 +465,26 @@ function carregarDetalhesChamado() {
 function atualizarPainelIdentificacao() {
   const texto = document.getElementById("texto-identificacao");
   const badge = document.getElementById("badge-identificacao");
-  const botao = document.getElementById("btn-trocar-usuario");
   if (!texto || !badge) return;
   texto.textContent = usuarioAutenticado
     ? `Atualizações serão registradas como ${usuarioAutenticado.tipo}.`
     : "Nenhum usuário autenticado.";
   badge.textContent = usuarioAutenticado?.tipo || "-";
-  botao?.addEventListener("click", (e) => {
-    e.preventDefault();
-    limparAutenticacao();
-    window.location.href = "login.html";
+}
+
+function atualizarNomeUsuarioCabecalho() {
+  const campo = document.getElementById("nome-usuario-cabecalho");
+  if (!campo) return;
+  campo.textContent = `Usuário: ${usuarioAutenticado?.usuario || "-"}`;
+}
+
+function registrarBotoesTrocaUsuario() {
+  document.querySelectorAll("#btn-trocar-usuario, #btn-trocar-usuario-cliente").forEach((botao) => {
+    botao.addEventListener("click", (e) => {
+      e.preventDefault();
+      limparAutenticacao();
+      redirecionarParaLogin();
+    });
   });
 }
 
@@ -447,7 +496,7 @@ function configurarTelaLogin() {
     return;
   }
   const alerta = document.getElementById("alerta-login");
-  form.addEventListener("submit", (evento) => {
+  form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
     const usuario = document.getElementById("campo-usuario").value.trim().toLowerCase();
     const senha = document.getElementById("campo-senha").value.trim();
@@ -530,20 +579,16 @@ function inicializar() {
     registrarFiltros();
   }
 
-  if (paginaCliente) {
-    renderChamadosClienteAbertos();
-    document.getElementById("btn-trocar-usuario-cliente")?.addEventListener("click", (evento) => {
-      evento.preventDefault();
-      limparAutenticacao();
-      redirecionarParaLogin();
-    });
-  }
+  if (paginaCliente) renderChamadosClienteAbertos();
 
   if (paginaCriacao) registrarFormularioCriacao();
   if (paginaDetalhes) {
     atualizarPainelIdentificacao();
     carregarDetalhesChamado();
   }
+
+  atualizarNomeUsuarioCabecalho();
+  registrarBotoesTrocaUsuario();
 
   window.addEventListener("storage", (evento) => {
     if (evento.key === CHAVE_STORAGE_CHAMADOS) {
