@@ -274,8 +274,8 @@ function renderChamadosClienteAbertos() {
   if (!lista) return;
   lista.innerHTML = "";
 
-  const clienteId = usuarioAutenticado?.clienteId;
-  const chamadosCliente = chamados.filter((c) => c.clienteLogin === clienteId);
+  const clienteId = (usuarioAutenticado?.clienteId || "").toLowerCase();
+  const chamadosCliente = chamados.filter((c) => (c.clienteLogin || "").toLowerCase() === clienteId);
   if (!chamadosCliente.length) {
     lista.innerHTML = '<div class="alert alert-info mb-0">Nenhum chamado encontrado.</div>';
     return;
@@ -393,8 +393,10 @@ function registrarFormularioAtualizacao(chamado) {
     btnConcluir?.classList.add("d-none");
     btnExcluir?.classList.add("d-none");
     document.getElementById("container-prioridade")?.classList.add("d-none");
+    document.getElementById("container-status")?.classList.add("d-none");
   } else {
     document.getElementById("prioridadeAtualizacao").value = chamado.priority;
+    document.getElementById("statusAtualizacao").value = chamado.status;
   }
 
   form.addEventListener("submit", async (evento) => {
@@ -402,6 +404,7 @@ function registrarFormularioAtualizacao(chamado) {
     const descricao = document.getElementById("descricaoAtualizacao").value.trim();
     if (!descricao) return;
     const prioridade = document.getElementById("prioridadeAtualizacao").value;
+    const status = document.getElementById("statusAtualizacao").value;
     const arquivo = document.getElementById("anexoAtualizacao").files[0];
     const anexoSerializado = arquivo
       ? [{ name: arquivo.name, content: await lerArquivoComoDataUrl(arquivo) }]
@@ -414,6 +417,7 @@ function registrarFormularioAtualizacao(chamado) {
     };
     chamado.updates.unshift(nova);
     chamado.priority = usuarioAutenticado?.tipo === "Cliente" ? chamado.priority : prioridade;
+    chamado.status = usuarioAutenticado?.tipo === "Cliente" ? chamado.status : status;
     chamado.lastUpdate = nova.date;
     try {
       salvarChamados();

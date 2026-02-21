@@ -1,6 +1,3 @@
-1 - colocar um botão de concluir chamado
-2 - cliente não pode abrir chamados, somente técnicos e eles 
-3 - colocar um textarea para descrever o caso em questão
-4 - colocar um status nas colunas "arquivado" "nao resolvido" "arquivado e nao resolvido" "arquivo morto"
-5 - colocar numero do processo e colocar a opção "sem processo" na criação de chamado
-6 - no cabeçalho do chamado colocar "parceria" e um checkbox com s/n e caso sim, colocar a porcentagem e com quem. isso tudo deve estar na tela de chamado
+permitir alteração no status do processo
+caso o cliente tenha atualizado o chamado, para o tecnico deve aparecer o chamado em questão como se tivesse uma notificação
+no cadastrar usuario, também deve ser póssivel cadastrar o email
