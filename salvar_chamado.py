@@ -1,10 +1,10 @@
 import MySQLdb
 
-host     = "ballast.proxy.rlwy.net"
-user     = "root"
+host = "ballast.proxy.rlwy.net"
+user = "root"
 password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-db       = "teste"
-port     =  15192
+db = "teste"
+port = 15192
 
 conn = MySQLdb.connect(host, user, password, db, port)
 cursor = conn.cursor()

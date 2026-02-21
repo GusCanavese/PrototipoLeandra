@@ -1,47 +1,70 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Login - Central de Chamados</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="assets/styles/main.css">
-</head>
-<body class="bg-light d-flex align-items-center" style="min-height: 100vh;">
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/styles/main.css" />
+  </head>
+  <body class="bg-light d-flex align-items-center" style="min-height: 100vh">
     <main class="container">
-        <div class="row justify-content-center">
-            <div class="col-12 col-md-8 col-lg-6">
-                <div class="card shadow-sm">
-                    <div class="card-body p-4">
-                        <h1 class="h4 fw-semibold text-primary mb-1 text-center">Identifique-se</h1>
-                        <p class="text-muted text-center mb-4">Entre como Técnico ou Cliente para registrar atualizações.</p>
+      <div class="row justify-content-center">
+        <div class="col-12 col-md-8 col-lg-6">
+          <div class="card shadow-sm">
+            <div class="card-body p-4">
+              <h1 class="h4 fw-semibold text-primary mb-1 text-center">
+                Identifique-se
+              </h1>
+              <p class="text-muted text-center mb-4">
+                Entre como Técnico ou Cliente para registrar atualizações.
+              </p>
 
-                        <div class="alert alert-info" id="alerta-login" role="status">
-                            Utilize tecnico/tecnico123 ou cliente/cliente123.
-                        </div>
+              <div class="alert alert-info" id="alerta-login" role="status">
+                Utilize tecnico/tecnico123 ou cliente/cliente123.
+              </div>
 
-                        <form id="form-login" class="vstack gap-3">
-                            <div>
-                                <label for="campo-usuario" class="form-label">Usuário</label>
-                                <input type="text" id="campo-usuario" class="form-control" placeholder="tecnico ou cliente" required>
-                            </div>
-                            <div>
-                                <label for="campo-senha" class="form-label">Senha</label>
-                                <input type="password" id="campo-senha" class="form-control" placeholder="Digite a senha" required>
-                            </div>
-                            <button type="submit" class="btn btn-primary w-100">Entrar</button>
-                        </form>
-
-                        <div class="text-center mt-3">
-                            <a href="index.html" class="text-decoration-none">Voltar para a lista de chamados</a>
-                        </div>
-                    </div>
+              <form id="form-login" class="vstack gap-3">
+                <div>
+                  <label for="campo-usuario" class="form-label">Usuário</label>
+                  <input
+                    type="text"
+                    id="campo-usuario"
+                    class="form-control"
+                    placeholder="tecnico ou cliente"
+                    required
+                  />
                 </div>
+                <div>
+                  <label for="campo-senha" class="form-label">Senha</label>
+                  <input
+                    type="password"
+                    id="campo-senha"
+                    class="form-control"
+                    placeholder="Digite a senha"
+                    required
+                  />
+                </div>
+                <button type="submit" class="btn btn-primary w-100">
+                  Entrar
+                </button>
+              </form>
+
+              <div class="text-center mt-3">
+                <a href="index.html" class="text-decoration-none"
+                  >Voltar para a lista de chamados</a
+                >
+              </div>
             </div>
+          </div>
         </div>
+      </div>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="assets/scripts/main.js"></script>
-</body>
+  </body>
 </html>

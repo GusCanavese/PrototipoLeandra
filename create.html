@@ -1,97 +1,159 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Novo Chamado</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="assets/styles/main.css">
-</head>
-<body class="bg-light">
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/styles/main.css" />
+  </head>
+  <body class="bg-light">
     <header class="bg-white border-bottom shadow-sm">
-        <div class="container py-3 d-flex justify-content-between align-items-center">
-            <div>
-                <h1 class="h4 mb-0 fw-semibold text-primary">Criar novo chamado</h1>
-                <p class="text-muted mb-0">Preencha os dados abaixo para abrir uma nova solicitação.</p>
-            </div>
-            <a href="index.html" class="btn btn-outline-secondary" id="link-voltar-criacao">Voltar</a>
+      <div
+        class="container py-3 d-flex justify-content-between align-items-center"
+      >
+        <div>
+          <h1 class="h4 mb-0 fw-semibold text-primary">Criar novo chamado</h1>
+          <p class="text-muted mb-0">
+            Preencha os dados abaixo para abrir uma nova solicitação.
+          </p>
         </div>
+        <a
+          href="index.html"
+          class="btn btn-outline-secondary"
+          id="link-voltar-criacao"
+          >Voltar</a
+        >
+      </div>
     </header>
 
     <main class="container py-4" id="pagina-criacao">
-        <div class="row justify-content-center">
-            <div class="col-12 col-lg-10 col-xl-8">
-                <div class="card shadow-sm">
-                    <div class="card-body">
-                        <div class="alert alert-info" id="alerta-criacao" role="status">
-                            Somente usuários autenticados podem abrir chamados. Campos são ajustados conforme o perfil.
-                        </div>
-                        <form id="form-criar-chamado" class="vstack gap-3">
-                            <div class="row g-3">
-                                <div class="col-12 col-md-6">
-                                    <label for="campo-cliente" class="form-label">Nome do cliente</label>
-                                    <input type="text" id="campo-cliente" class="form-control" placeholder="Ex.: Clínica Horizonte" required>
-                                </div>
-                                <div class="col-12 col-md-6">
-                                    <label for="campo-login-cliente" class="form-label">Login do cliente</label>
-                                    <input type="text" id="campo-login-cliente" class="form-control" placeholder="Ex.: cliente" required>
-                                    <div class="form-text">Usado para vincular o chamado ao cliente autenticado.</div>
-                                </div>
-                            </div>
-
-                            <div class="row g-3">
-                                <div class="col-12 col-md-8">
-                                    <label for="campo-resumo" class="form-label">Resumo do problema</label>
-                                    <input type="text" id="campo-resumo" class="form-control" placeholder="Descreva resumidamente" required>
-                                </div>
-                                <div class="col-12 col-md-4">
-                                    <label for="campo-prioridade" class="form-label">Prioridade</label>
-                                    <select id="campo-prioridade" class="form-select" required>
-                                        <option value="Alta">Alta</option>
-                                        <option value="Média" selected>Média</option>
-                                        <option value="Baixa">Baixa</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="row g-3">
-                                <div class="col-12 col-md-6">
-                                    <label for="campo-status" class="form-label">Status</label>
-                                    <select id="campo-status" class="form-select">
-                                        <option value="Aberto" selected>Aberto</option>
-                                        <option value="Em andamento">Em andamento</option>
-                                        <option value="Concluído">Concluído</option>
-                                    </select>
-                                    <div class="form-text" id="ajuda-status">Clientes abrem chamados como "Aberto".</div>
-                                </div>
-                                <div class="col-12 col-md-6">
-                                    <label for="campo-anexo" class="form-label">Anexar arquivo (opcional)</label>
-                                    <input class="form-control" type="file" id="campo-anexo" aria-describedby="dicaAnexoCriacao">
-                                    <div class="form-text" id="dicaAnexoCriacao">Arquivos são simulados apenas como nome.</div>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label for="campo-descricao" class="form-label">Descrição detalhada</label>
-                                <textarea id="campo-descricao" class="form-control" rows="4" placeholder="Inclua detalhes e passos para reprodução" required></textarea>
-                            </div>
-
-                            <button type="submit" class="btn btn-primary">Abrir chamado</button>
-                        </form>
+      <div class="row justify-content-center">
+        <div class="col-12 col-lg-10 col-xl-8">
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <div class="alert alert-info" id="alerta-criacao" role="status">
+                Somente usuários autenticados podem abrir chamados. Campos são
+                ajustados conforme o perfil.
+              </div>
+              <form id="form-criar-chamado" class="vstack gap-3">
+                <div class="row g-3">
+                  <div class="col-12 col-md-6">
+                    <label for="campo-cliente" class="form-label"
+                      >Nome do cliente</label
+                    >
+                    <input
+                      type="text"
+                      id="campo-cliente"
+                      class="form-control"
+                      placeholder="Ex.: Clínica Horizonte"
+                      required
+                    />
+                  </div>
+                  <div class="col-12 col-md-6">
+                    <label for="campo-login-cliente" class="form-label"
+                      >Login do cliente</label
+                    >
+                    <input
+                      type="text"
+                      id="campo-login-cliente"
+                      class="form-control"
+                      placeholder="Ex.: cliente"
+                      required
+                    />
+                    <div class="form-text">
+                      Usado para vincular o chamado ao cliente autenticado.
                     </div>
+                  </div>
                 </div>
+
+                <div class="row g-3">
+                  <div class="col-12 col-md-8">
+                    <label for="campo-resumo" class="form-label"
+                      >Resumo do problema</label
+                    >
+                    <input
+                      type="text"
+                      id="campo-resumo"
+                      class="form-control"
+                      placeholder="Descreva resumidamente"
+                      required
+                    />
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <label for="campo-prioridade" class="form-label"
+                      >Prioridade</label
+                    >
+                    <select id="campo-prioridade" class="form-select" required>
+                      <option value="Alta">Alta</option>
+                      <option value="Média" selected>Média</option>
+                      <option value="Baixa">Baixa</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="row g-3">
+                  <div class="col-12 col-md-6">
+                    <label for="campo-status" class="form-label">Status</label>
+                    <select id="campo-status" class="form-select">
+                      <option value="Aberto" selected>Aberto</option>
+                      <option value="Em andamento">Em andamento</option>
+                      <option value="Concluído">Concluído</option>
+                    </select>
+                    <div class="form-text" id="ajuda-status">
+                      Clientes abrem chamados como "Aberto".
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-6">
+                    <label for="campo-anexo" class="form-label"
+                      >Anexar arquivo (opcional)</label
+                    >
+                    <input
+                      class="form-control"
+                      type="file"
+                      id="campo-anexo"
+                      aria-describedby="dicaAnexoCriacao"
+                    />
+                    <div class="form-text" id="dicaAnexoCriacao">
+                      Arquivos são simulados apenas como nome.
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label for="campo-descricao" class="form-label"
+                    >Descrição detalhada</label
+                  >
+                  <textarea
+                    id="campo-descricao"
+                    class="form-control"
+                    rows="4"
+                    placeholder="Inclua detalhes e passos para reprodução"
+                    required
+                  ></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary">
+                  Abrir chamado
+                </button>
+              </form>
             </div>
+          </div>
         </div>
+      </div>
     </main>
 
     <footer class="border-top bg-white py-3 mt-4">
-        <div class="container d-flex justify-content-between align-items-center">
-            <span class="text-muted small">Central de Chamados - Novo chamado</span>
-            <span class="text-muted small">Apenas usuários autenticados</span>
-        </div>
+      <div class="container d-flex justify-content-between align-items-center">
+        <span class="text-muted small">Central de Chamados - Novo chamado</span>
+        <span class="text-muted small">Apenas usuários autenticados</span>
+      </div>
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="assets/scripts/main.js"></script>
-</body>
+  </body>
 </html>
