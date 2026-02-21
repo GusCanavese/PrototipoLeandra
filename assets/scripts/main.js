@@ -1,6 +1,6 @@
 const CHAMADOS_INICIAIS = [
   {
-    id: "CH-1024",
+    id: "C-1",
     client: "Clínica Horizonte",
     summary: "Falha no acesso ao prontuário eletrônico",
     description: "Usuários não conseguem salvar novos pacientes no sistema.",
@@ -16,7 +16,7 @@ const CHAMADOS_INICIAIS = [
     updates: [],
   },
   {
-    id: "CH-1025",
+    id: "C-2",
     client: "Empresa Sol Nascente",
     summary: "Erro ao anexar comprovante no portal",
     description: "O upload finaliza, mas o arquivo não fica visível no histórico.",
@@ -39,7 +39,7 @@ const CHAMADOS_INICIAIS = [
     ],
   },
   {
-    id: "CH-1026",
+    id: "C-3",
     client: "Loja Aurora",
     summary: "Consulta de andamento do processo",
     description: "Solicitação de retorno sobre prazo da audiência.",
@@ -56,7 +56,18 @@ const CHAMADOS_INICIAIS = [
   },
 ];
 
+const CLIENTES_INICIAIS = [
+  {
+    nomeCompleto: "Cliente Padrão",
+    telefone: "(11) 99999-9999",
+    documento: "000.000.000-00",
+    login: "cliente",
+    senha: "cliente123",
+  },
+];
+
 const CHAVE_STORAGE_CHAMADOS = "chamadosRegistrados";
+const CHAVE_STORAGE_CLIENTES = "clientesRegistrados";
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 
@@ -73,13 +84,9 @@ const filtros = {
 
 const credenciaisLogin = {
   tecnico: { senha: "tecnico123", tipo: "Técnico", redirect: "index.html" },
-  cliente: {
-    senha: "cliente123",
-    tipo: "Cliente",
-    redirect: "cliente.html",
-    clienteId: "cliente",
-  },
 };
+
+let clientes = [];
 
 function formatarDataHoraAtual() {
   return new Date().toLocaleString("pt-BR");
@@ -123,8 +130,66 @@ function carregarChamadosSalvos() {
   salvarChamados(chamados, false);
 }
 
+function carregarClientesSalvos() {
+  try {
+    const dados = localStorage.getItem(CHAVE_STORAGE_CLIENTES);
+    clientes = dados ? JSON.parse(dados) : [...CLIENTES_INICIAIS];
+  } catch {
+    clientes = [...CLIENTES_INICIAIS];
+  }
+  salvarClientes(false);
+}
+
+function salvarClientes(atualizarStorage = true) {
+  if (!atualizarStorage) {
+    localStorage.setItem(CHAVE_STORAGE_CLIENTES, JSON.stringify(clientes));
+    return;
+  }
+  localStorage.setItem(CHAVE_STORAGE_CLIENTES, JSON.stringify(clientes));
+}
+
+function obterClientePorLogin(login) {
+  if (!login) return null;
+  return clientes.find((cliente) => cliente.login.toLowerCase() === login.toLowerCase()) || null;
+}
+
+function removerConteudoAnexos(chamadosAtualizados = []) {
+  return chamadosAtualizados.map((chamado) => ({
+    ...chamado,
+    updates: (chamado.updates || []).map((atualizacao) => ({
+      ...atualizacao,
+      attachments: (atualizacao.attachments || []).map((anexo) => {
+        const normalizado = normalizarAnexo(anexo);
+        return normalizado ? { name: normalizado.name, content: null } : anexo;
+      }),
+    })),
+  }));
+}
+
+function erroDeQuotaStorage(erro) {
+  return (
+    erro?.name === "QuotaExceededError" ||
+    erro?.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    erro?.code === 22 ||
+    erro?.code === 1014
+  );
+}
+
 function salvarChamados(chamadosAtualizados = chamados, atualizarTela = true) {
-  localStorage.setItem(CHAVE_STORAGE_CHAMADOS, JSON.stringify(chamadosAtualizados));
+  try {
+    localStorage.setItem(CHAVE_STORAGE_CHAMADOS, JSON.stringify(chamadosAtualizados));
+  } catch (erro) {
+    if (!erroDeQuotaStorage(erro)) throw erro;
+
+    const chamadosCompactados = removerConteudoAnexos(chamadosAtualizados);
+    try {
+      localStorage.setItem(CHAVE_STORAGE_CHAMADOS, JSON.stringify(chamadosCompactados));
+      chamados = chamadosCompactados;
+    } catch {
+      throw new Error("Limite de armazenamento excedido. Remova anexos grandes para continuar.");
+    }
+  }
+
   if (atualizarTela) atualizarTelaComChamadosAtualizados();
   if (typeof BroadcastChannel !== "undefined") {
     const canal = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
@@ -350,7 +415,12 @@ function registrarFormularioAtualizacao(chamado) {
     chamado.updates.unshift(nova);
     chamado.priority = usuarioAutenticado?.tipo === "Cliente" ? chamado.priority : prioridade;
     chamado.lastUpdate = nova.date;
-    salvarChamados();
+    try {
+      salvarChamados();
+    } catch (erro) {
+      alert(erro.message || "Não foi possível salvar a atualização do chamado.");
+      return;
+    }
     preencherCabecalhoChamado(chamado);
     preencherHistorico(chamado);
     preencherAnexos(chamado);
@@ -360,21 +430,36 @@ function registrarFormularioAtualizacao(chamado) {
   btnConcluir?.addEventListener("click", () => {
     chamado.status = "Concluído";
     chamado.lastUpdate = formatarDataHoraAtual();
-    salvarChamados();
+    try {
+      salvarChamados();
+    } catch (erro) {
+      alert(erro.message || "Não foi possível concluir o chamado.");
+      return;
+    }
     preencherCabecalhoChamado(chamado);
     preencherHistorico(chamado);
   });
 
   btnExcluir?.addEventListener("click", () => {
     chamados = chamados.filter((item) => item.id !== chamado.id);
-    salvarChamados();
+    try {
+      salvarChamados();
+    } catch (erro) {
+      alert(erro.message || "Não foi possível excluir o chamado.");
+      return;
+    }
     window.location.href = "index.html";
   });
 }
 
 function gerarNovoIdChamado() {
-  const numeros = chamados.map((c) => parseInt((c.id || "").split("-")[1], 10)).filter((n) => !Number.isNaN(n));
-  return `CH-${Math.max(...numeros, 1024) + 1}`;
+  if (!chamados || chamados.length === 0) {
+    return "C-1";
+  }
+  const ultimoChamado = chamados[chamados.length - 1];
+  const correspondencia = (ultimoChamado.id || "").match(/(\d+)/);
+  const ultimoNumero = correspondencia ? parseInt(correspondencia[1], 10) : 0;
+  return `C-${ultimoNumero + 1}`;
 }
 
 function registrarFormularioCriacao() {
@@ -386,6 +471,45 @@ function registrarFormularioCriacao() {
   const campoParceria = document.getElementById("campo-parceria");
   const campoParceriaPct = document.getElementById("campo-parceria-porcentagem");
   const campoParceriaCom = document.getElementById("campo-parceria-com");
+  const campoCliente = document.getElementById("campo-cliente");
+  const campoLoginCliente = document.getElementById("campo-login-cliente");
+  const alertaCriacao = document.getElementById("alerta-criacao");
+  const botaoCadastrarCliente = document.getElementById("btn-cadastrar-cliente");
+
+  function validarClienteExistente() {
+    const loginInformado = campoLoginCliente.value.trim().toLowerCase();
+    if (!loginInformado) {
+      botaoCadastrarCliente?.classList.add("d-none");
+      return;
+    }
+
+    const clienteEncontrado = obterClientePorLogin(loginInformado);
+    if (clienteEncontrado) {
+      campoCliente.value = clienteEncontrado.nomeCompleto;
+      botaoCadastrarCliente?.classList.add("d-none");
+      if (alertaCriacao) {
+        alertaCriacao.className = "alert alert-success";
+        alertaCriacao.textContent = "Cliente encontrado. Você pode seguir com o chamado.";
+      }
+      return;
+    }
+
+    if (alertaCriacao) {
+      alertaCriacao.className = "alert alert-warning";
+      alertaCriacao.textContent = "Cliente não encontrado para este login. Cadastre o cliente para continuar.";
+    }
+    botaoCadastrarCliente?.classList.remove("d-none");
+    botaoCadastrarCliente.href = `cadastro-cliente.html?login=${encodeURIComponent(loginInformado)}`;
+  }
+
+  campoLoginCliente?.addEventListener("blur", validarClienteExistente);
+  campoLoginCliente?.addEventListener("input", () => {
+    botaoCadastrarCliente?.classList.add("d-none");
+    if (alertaCriacao) {
+      alertaCriacao.className = "alert alert-info";
+      alertaCriacao.textContent = "Informe os dados completos para abertura do chamado.";
+    }
+  });
 
   semProcesso?.addEventListener("change", () => {
     campoProcesso.disabled = semProcesso.checked;
@@ -439,11 +563,78 @@ function registrarFormularioCriacao() {
       ],
     };
 
+    const clienteVinculado = obterClientePorLogin(novoChamado.clienteLogin);
+    if (!clienteVinculado) {
+      if (alertaCriacao) {
+        alertaCriacao.className = "alert alert-danger";
+        alertaCriacao.textContent = "Cadastre o cliente antes de abrir o chamado.";
+      }
+      botaoCadastrarCliente?.classList.remove("d-none");
+      botaoCadastrarCliente.href = `cadastro-cliente.html?login=${encodeURIComponent(novoChamado.clienteLogin)}`;
+      return;
+    }
+
+    novoChamado.client = clienteVinculado.nomeCompleto;
+
     if (!novoChamado.client || !novoChamado.clienteLogin || !novoChamado.summary || !descricao) return;
 
     chamados.unshift(novoChamado);
-    salvarChamados();
+    try {
+      salvarChamados();
+    } catch (erro) {
+      if (alertaCriacao) {
+        alertaCriacao.className = "alert alert-danger";
+        alertaCriacao.textContent = erro.message || "Não foi possível salvar o chamado.";
+      }
+      return;
+    }
     window.location.href = "index.html";
+  });
+}
+
+function registrarFormularioCadastroCliente() {
+  const form = document.getElementById("form-cadastro-cliente");
+  if (!form) return;
+
+  const alerta = document.getElementById("alerta-cadastro-cliente");
+  const campoLogin = document.getElementById("campo-cadastro-login");
+  const loginPreenchido = new URLSearchParams(window.location.search).get("login");
+  if (loginPreenchido) campoLogin.value = loginPreenchido;
+
+  form.addEventListener("submit", (evento) => {
+    evento.preventDefault();
+
+    const novoCliente = {
+      nomeCompleto: document.getElementById("campo-cadastro-nome").value.trim(),
+      telefone: document.getElementById("campo-cadastro-telefone").value.trim(),
+      documento: document.getElementById("campo-cadastro-documento").value.trim(),
+      login: campoLogin.value.trim().toLowerCase(),
+      senha: document.getElementById("campo-cadastro-senha").value.trim(),
+    };
+
+    if (!novoCliente.nomeCompleto || !novoCliente.telefone || !novoCliente.documento || !novoCliente.login || !novoCliente.senha) {
+      return;
+    }
+
+    if (credenciaisLogin[novoCliente.login] || obterClientePorLogin(novoCliente.login)) {
+      if (alerta) {
+        alerta.className = "alert alert-danger";
+        alerta.textContent = "Este login já está em uso. Informe outro login.";
+      }
+      return;
+    }
+
+    clientes.push(novoCliente);
+    salvarClientes();
+
+    if (alerta) {
+      alerta.className = "alert alert-success";
+      alerta.textContent = "Cliente cadastrado com sucesso. Agora você pode abrir o chamado.";
+    }
+
+    setTimeout(() => {
+      window.location.href = `create.html?clienteLogin=${encodeURIComponent(novoCliente.login)}`;
+    }, 800);
   });
 }
 
@@ -500,7 +691,15 @@ function configurarTelaLogin() {
     evento.preventDefault();
     const usuario = document.getElementById("campo-usuario").value.trim().toLowerCase();
     const senha = document.getElementById("campo-senha").value.trim();
-    const credencial = credenciaisLogin[usuario];
+    const cliente = obterClientePorLogin(usuario);
+    const credencial = cliente
+      ? {
+          senha: cliente.senha,
+          tipo: "Cliente",
+          redirect: "cliente.html",
+          clienteId: cliente.login,
+        }
+      : credenciaisLogin[usuario];
     if (credencial && credencial.senha === senha) {
       salvarUsuarioAutenticado({ usuario, tipo: credencial.tipo, clienteId: credencial.clienteId });
       window.location.href = credencial.redirect;
@@ -551,14 +750,16 @@ function redirecionarParaLogin() {
 function inicializar() {
   definirUsuarioAutenticadoSeSalvo();
   carregarChamadosSalvos();
+  carregarClientesSalvos();
   configurarTelaLogin();
 
   const paginaDetalhes = document.getElementById("detalhes-chamado");
   const paginaListaTecnico = document.getElementById("table-chamados");
   const paginaCliente = document.getElementById("pagina-cliente");
   const paginaCriacao = document.getElementById("pagina-criacao");
+  const paginaCadastroCliente = document.getElementById("pagina-cadastro-cliente");
 
-  if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao)) {
+  if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente)) {
     redirecionarParaLogin();
     return;
   }
@@ -568,7 +769,7 @@ function inicializar() {
     return;
   }
 
-  if (paginaCriacao && usuarioAutenticado?.tipo !== "Técnico") {
+  if ((paginaCriacao || paginaCadastroCliente) && usuarioAutenticado?.tipo !== "Técnico") {
     window.location.href = "cliente.html";
     return;
   }
@@ -581,7 +782,15 @@ function inicializar() {
 
   if (paginaCliente) renderChamadosClienteAbertos();
 
-  if (paginaCriacao) registrarFormularioCriacao();
+  if (paginaCriacao) {
+    const loginClientePredefinido = new URLSearchParams(window.location.search).get("clienteLogin");
+    if (loginClientePredefinido) {
+      const campoLoginCliente = document.getElementById("campo-login-cliente");
+      if (campoLoginCliente) campoLoginCliente.value = loginClientePredefinido;
+    }
+    registrarFormularioCriacao();
+  }
+  if (paginaCadastroCliente) registrarFormularioCadastroCliente();
   if (paginaDetalhes) {
     atualizarPainelIdentificacao();
     carregarDetalhesChamado();
