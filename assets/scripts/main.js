@@ -15,6 +15,45 @@ const CHAMADOS_INICIAIS = [
     partnershipWith: "Escritório Lima",
     updates: [],
   },
+  {
+    id: "CH-1025",
+    client: "Empresa Sol Nascente",
+    summary: "Erro ao anexar comprovante no portal",
+    description: "O upload finaliza, mas o arquivo não fica visível no histórico.",
+    lastUpdate: "11/06/2024 09:20",
+    openedAt: "11/06/2024",
+    priority: "Média",
+    status: "Aberto",
+    clienteLogin: "cliente",
+    processNumber: "0001250-22.2024.8.26.0001",
+    hasPartnership: false,
+    partnershipPercent: "",
+    partnershipWith: "",
+    updates: [
+      {
+        author: "Cliente",
+        message: "Anexo enviado para validação.",
+        date: "11/06/2024 09:20",
+        attachments: ["comprovante.pdf"],
+      },
+    ],
+  },
+  {
+    id: "CH-1026",
+    client: "Loja Aurora",
+    summary: "Consulta de andamento do processo",
+    description: "Solicitação de retorno sobre prazo da audiência.",
+    lastUpdate: "11/06/2024 10:05",
+    openedAt: "11/06/2024",
+    priority: "Baixa",
+    status: "Aberto",
+    clienteLogin: "cliente",
+    processNumber: "Sem processo",
+    hasPartnership: false,
+    partnershipPercent: "",
+    partnershipWith: "",
+    updates: [],
+  },
 ];
 
 const CHAVE_STORAGE_CHAMADOS = "chamadosRegistrados";
@@ -170,10 +209,22 @@ function renderChamadosAbertos() {
   const grid = document.getElementById("grid-chamados-abertos");
   if (!grid) return;
   grid.innerHTML = "";
+
   chamados.filter((c) => c.status === "Aberto").forEach((chamado) => {
     const coluna = document.createElement("div");
     coluna.className = "col-12 col-md-6 col-xl-4";
-    coluna.innerHTML = `<div class="card ticket-card h-100"><div class="card-body"><h3 class="h6">${chamado.client}</h3><p>${chamado.summary}</p><small>${chamado.lastUpdate}</small></div></div>`;
+    coluna.innerHTML = `
+      <div class="card ticket-card h-100 shadow-sm">
+        <div class="card-body d-flex flex-column gap-2">
+          <h3 class="h6 mb-0">${chamado.client}</h3>
+          <p class="mb-0">${chamado.summary}</p>
+          <small class="text-muted">${chamado.lastUpdate}</small>
+          <div><span class="badge bg-light text-dark border">${chamado.status}</span></div>
+          <div class="container-prioridade-card"></div>
+          <a class="btn btn-primary btn-sm mt-auto align-self-start" href="details.html?id=${encodeURIComponent(chamado.id)}">Ver</a>
+        </div>
+      </div>`;
+    coluna.querySelector(".container-prioridade-card").appendChild(createPriorityBadge(chamado.priority));
     grid.appendChild(coluna);
   });
 }
@@ -193,7 +244,6 @@ function preencherCabecalhoChamado(chamado) {
         <p class="text-muted mb-1">${chamado.id}</p>
         <h2 class="h5 mb-1">${chamado.client}</h2>
         <p class="mb-2">${chamado.summary}</p>
-        <p class="mb-1"><strong>Descrição do caso:</strong> ${chamado.description || "-"}</p>
         <p class="mb-1"><strong>Nº Processo:</strong> ${chamado.processNumber || "Sem processo"}</p>
         <p class="mb-0"><strong>Parceria:</strong> ${parceria}</p>
       </div>
@@ -213,9 +263,12 @@ function preencherHistorico(chamado) {
   listaHistorico.innerHTML = "";
 
   chamado.updates.forEach((u) => {
+    const anexos = (u.attachments || []).length
+      ? `<div class="small mt-2"><strong>Anexos:</strong> ${(u.attachments || []).join(", ")}</div>`
+      : "";
     const item = document.createElement("div");
     item.className = "timeline-item";
-    item.innerHTML = `<div class="d-flex justify-content-between"><strong>${u.author}</strong><span class="small text-muted">${u.date}</span></div><p class="mb-1">${u.message}</p>`;
+    item.innerHTML = `<div class="d-flex justify-content-between"><strong>${u.author}</strong><span class="small text-muted">${u.date}</span></div><p class="mb-1">${u.message}</p>${anexos}`;
     listaHistorico.appendChild(item);
   });
 }
