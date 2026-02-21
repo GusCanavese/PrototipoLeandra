@@ -66,10 +66,10 @@ const CLIENTES_INICIAIS = [
   },
 ];
 
-const CHAVE_STORAGE_CHAMADOS = "chamadosRegistrados";
-const CHAVE_STORAGE_CLIENTES = "clientesRegistrados";
+const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
+const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 
 let chamados = [];
 let usuarioAutenticado = null;
@@ -87,6 +87,23 @@ const credenciaisLogin = {
 };
 
 let clientes = [];
+
+let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
+
+function obterBancoProjetoAtivo() {
+  return bancoProjetoAtivo || "teste";
+}
+
+function definirBancoProjetoAtivo(nomeBanco) {
+  bancoProjetoAtivo = (nomeBanco || "teste").trim();
+  localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
+}
+
+async function carregarProjetosDisponiveis() {
+  const resposta = await fetch(`${API_BASE_URL}/projetos`);
+  if (!resposta.ok) throw new Error("Não foi possível carregar os projetos.");
+  return resposta.json();
+}
 
 function formatarDataHoraAtual() {
   return new Date().toLocaleString("pt-BR");
@@ -120,32 +137,38 @@ function renderizarAnexosComDownload(anexos = []) {
     .join(", ");
 }
 
-function carregarChamadosSalvos() {
-  try {
-    const dados = localStorage.getItem(CHAVE_STORAGE_CHAMADOS);
-    chamados = dados ? JSON.parse(dados) : [...CHAMADOS_INICIAIS];
-  } catch {
-    chamados = [...CHAMADOS_INICIAIS];
+async function requisicaoApi(caminho, opcoes = {}) {
+  const resposta = await fetch(`${API_BASE_URL}${caminho}`, {
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-DB": obterBancoProjetoAtivo(),
+      ...(opcoes.headers || {}),
+    },
+    ...opcoes,
+  });
+
+  if (!resposta.ok) {
+    const erro = await resposta.text();
+    throw new Error(erro || "Falha na comunicação com o banco de dados.");
   }
-  salvarChamados(chamados, false);
+
+  const texto = await resposta.text();
+  return texto ? JSON.parse(texto) : null;
 }
 
-function carregarClientesSalvos() {
-  try {
-    const dados = localStorage.getItem(CHAVE_STORAGE_CLIENTES);
-    clientes = dados ? JSON.parse(dados) : [...CLIENTES_INICIAIS];
-  } catch {
-    clientes = [...CLIENTES_INICIAIS];
-  }
-  salvarClientes(false);
+async function carregarChamadosSalvos() {
+  chamados = await requisicaoApi("/chamados");
 }
 
-function salvarClientes(atualizarStorage = true) {
-  if (!atualizarStorage) {
-    localStorage.setItem(CHAVE_STORAGE_CLIENTES, JSON.stringify(clientes));
-    return;
-  }
-  localStorage.setItem(CHAVE_STORAGE_CLIENTES, JSON.stringify(clientes));
+async function carregarClientesSalvos() {
+  clientes = await requisicaoApi("/clientes");
+}
+
+async function salvarClientes() {
+  await requisicaoApi("/clientes", {
+    method: "PUT",
+    body: JSON.stringify(clientes),
+  });
 }
 
 function obterClientePorLogin(login) {
@@ -175,15 +198,21 @@ function erroDeQuotaStorage(erro) {
   );
 }
 
-function salvarChamados(chamadosAtualizados = chamados, atualizarTela = true) {
+async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = true) {
   try {
-    localStorage.setItem(CHAVE_STORAGE_CHAMADOS, JSON.stringify(chamadosAtualizados));
+    await requisicaoApi("/chamados", {
+      method: "PUT",
+      body: JSON.stringify(chamadosAtualizados),
+    });
   } catch (erro) {
     if (!erroDeQuotaStorage(erro)) throw erro;
 
     const chamadosCompactados = removerConteudoAnexos(chamadosAtualizados);
     try {
-      localStorage.setItem(CHAVE_STORAGE_CHAMADOS, JSON.stringify(chamadosCompactados));
+      await requisicaoApi("/chamados", {
+        method: "PUT",
+        body: JSON.stringify(chamadosCompactados),
+      });
       chamados = chamadosCompactados;
     } catch {
       throw new Error("Limite de armazenamento excedido. Remova anexos grandes para continuar.");
@@ -420,7 +449,7 @@ function registrarFormularioAtualizacao(chamado) {
     chamado.status = usuarioAutenticado?.tipo === "Cliente" ? chamado.status : status;
     chamado.lastUpdate = nova.date;
     try {
-      salvarChamados();
+      await salvarChamados();
     } catch (erro) {
       alert(erro.message || "Não foi possível salvar a atualização do chamado.");
       return;
@@ -431,11 +460,11 @@ function registrarFormularioAtualizacao(chamado) {
     form.reset();
   });
 
-  btnConcluir?.addEventListener("click", () => {
+  btnConcluir?.addEventListener("click", async () => {
     chamado.status = "Concluído";
     chamado.lastUpdate = formatarDataHoraAtual();
     try {
-      salvarChamados();
+      await salvarChamados();
     } catch (erro) {
       alert(erro.message || "Não foi possível concluir o chamado.");
       return;
@@ -444,10 +473,10 @@ function registrarFormularioAtualizacao(chamado) {
     preencherHistorico(chamado);
   });
 
-  btnExcluir?.addEventListener("click", () => {
+  btnExcluir?.addEventListener("click", async () => {
     chamados = chamados.filter((item) => item.id !== chamado.id);
     try {
-      salvarChamados();
+      await salvarChamados();
     } catch (erro) {
       alert(erro.message || "Não foi possível excluir o chamado.");
       return;
@@ -584,7 +613,7 @@ function registrarFormularioCriacao() {
 
     chamados.unshift(novoChamado);
     try {
-      salvarChamados();
+      await salvarChamados();
     } catch (erro) {
       if (alertaCriacao) {
         alertaCriacao.className = "alert alert-danger";
@@ -605,7 +634,7 @@ function registrarFormularioCadastroCliente() {
   const loginPreenchido = new URLSearchParams(window.location.search).get("login");
   if (loginPreenchido) campoLogin.value = loginPreenchido;
 
-  form.addEventListener("submit", (evento) => {
+  form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
 
     const novoCliente = {
@@ -629,7 +658,7 @@ function registrarFormularioCadastroCliente() {
     }
 
     clientes.push(novoCliente);
-    salvarClientes();
+    await salvarClientes();
 
     if (alerta) {
       alerta.className = "alert alert-success";
@@ -683,7 +712,7 @@ function registrarBotoesTrocaUsuario() {
   });
 }
 
-function configurarTelaLogin() {
+async function configurarTelaLogin() {
   const form = document.getElementById("form-login");
   if (!form) return;
   if (usuarioAutenticado) {
@@ -691,28 +720,71 @@ function configurarTelaLogin() {
     return;
   }
   const alerta = document.getElementById("alerta-login");
+  const seletorProjeto = document.getElementById("campo-projeto-login");
+  try {
+    const dadosProjetos = await carregarProjetosDisponiveis();
+    if (seletorProjeto) {
+      seletorProjeto.innerHTML = (dadosProjetos.projetos || [])
+        .map((projeto) => `<option value="${projeto}">${projeto}</option>`)
+        .join("");
+      seletorProjeto.value = obterBancoProjetoAtivo();
+      seletorProjeto.addEventListener("change", () => definirBancoProjetoAtivo(seletorProjeto.value));
+    }
+  } catch {
+    if (alerta) {
+      alerta.className = "alert alert-warning";
+      alerta.textContent = "Não foi possível carregar a lista de projetos do servidor.";
+    }
+  }
+
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
-    const usuario = document.getElementById("campo-usuario").value.trim().toLowerCase();
+    const usuario = document.getElementById("campo-usuario").value.trim();
     const senha = document.getElementById("campo-senha").value.trim();
-    const cliente = obterClientePorLogin(usuario);
-    const credencial = cliente
-      ? {
-          senha: cliente.senha,
-          tipo: "Cliente",
-          redirect: "cliente.html",
-          clienteId: cliente.login,
-        }
-      : credenciaisLogin[usuario];
-    if (credencial && credencial.senha === senha) {
-      salvarUsuarioAutenticado({ usuario, tipo: credencial.tipo, clienteId: credencial.clienteId });
-      window.location.href = credencial.redirect;
+    try {
+      const autenticacao = await requisicaoApi("/login", {
+        method: "POST",
+        body: JSON.stringify({ usuario, senha, banco: obterBancoProjetoAtivo() }),
+      });
+      if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
+      salvarUsuarioAutenticado({
+        usuario,
+        tipo: autenticacao.tipo,
+        clienteId: autenticacao.clienteId,
+      });
+      window.location.href = autenticacao.redirect;
       return;
+    } catch {
+      // segue para o alerta de erro
     }
     if (alerta) {
       alerta.className = "alert alert-danger";
       alerta.textContent = "Credenciais inválidas.";
     }
+  });
+}
+
+
+async function configurarPainelAdministrador() {
+  const containerLista = document.getElementById("lista-projetos-admin");
+  const atual = document.getElementById("banco-atual-admin");
+  if (!containerLista || !atual) return;
+
+  atual.textContent = obterBancoProjetoAtivo();
+  const dados = await carregarProjetosDisponiveis();
+  const projetos = dados.projetos || [];
+
+  containerLista.innerHTML = "";
+  projetos.forEach((projeto) => {
+    const item = document.createElement("button");
+    item.className = "list-group-item list-group-item-action d-flex justify-content-between align-items-center";
+    item.innerHTML = `<span>${projeto}</span><span class="badge bg-primary">Selecionar</span>`;
+    item.addEventListener("click", () => {
+      definirBancoProjetoAtivo(projeto);
+      atual.textContent = projeto;
+      window.location.href = "index.html";
+    });
+    containerLista.appendChild(item);
   });
 }
 
@@ -751,29 +823,45 @@ function redirecionarParaLogin() {
   window.location.href = "login.html";
 }
 
-function inicializar() {
+async function inicializar() {
   definirUsuarioAutenticadoSeSalvo();
-  carregarChamadosSalvos();
-  carregarClientesSalvos();
-  configurarTelaLogin();
 
   const paginaDetalhes = document.getElementById("detalhes-chamado");
   const paginaListaTecnico = document.getElementById("table-chamados");
   const paginaCliente = document.getElementById("pagina-cliente");
   const paginaCriacao = document.getElementById("pagina-criacao");
   const paginaCadastroCliente = document.getElementById("pagina-cadastro-cliente");
+  const paginaAdmin = document.getElementById("pagina-admin");
 
-  if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente)) {
+  await configurarTelaLogin();
+
+  const paginaProtegida = paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin;
+  if (paginaProtegida) {
+    try {
+      await carregarChamadosSalvos();
+      await carregarClientesSalvos();
+    } catch {
+      alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtivo()}'. Verifique o backend Python.`);
+      return;
+    }
+  }
+
+  if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin)) {
     redirecionarParaLogin();
     return;
   }
 
-  if (paginaListaTecnico && usuarioAutenticado?.tipo !== "Técnico") {
+  if (paginaAdmin && usuarioAutenticado?.tipo !== "Administrador") {
+    window.location.href = "index.html";
+    return;
+  }
+
+  if (paginaListaTecnico && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
     window.location.href = "cliente.html";
     return;
   }
 
-  if ((paginaCriacao || paginaCadastroCliente) && usuarioAutenticado?.tipo !== "Técnico") {
+  if ((paginaCriacao || paginaCadastroCliente) && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
     window.location.href = "cliente.html";
     return;
   }
@@ -795,6 +883,7 @@ function inicializar() {
     registrarFormularioCriacao();
   }
   if (paginaCadastroCliente) registrarFormularioCadastroCliente();
+  if (paginaAdmin) await configurarPainelAdministrador();
   if (paginaDetalhes) {
     atualizarPainelIdentificacao();
     carregarDetalhesChamado();
@@ -803,12 +892,15 @@ function inicializar() {
   atualizarNomeUsuarioCabecalho();
   registrarBotoesTrocaUsuario();
 
-  window.addEventListener("storage", (evento) => {
-    if (evento.key === CHAVE_STORAGE_CHAMADOS) {
-      carregarChamadosSalvos();
+  if (typeof BroadcastChannel !== "undefined") {
+    const canalAtualizacao = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
+    canalAtualizacao.addEventListener("message", async () => {
+      await carregarChamadosSalvos();
       atualizarTelaComChamadosAtualizados();
-    }
-  });
+    });
+  }
 }
 
-document.addEventListener("DOMContentLoaded", inicializar);
+document.addEventListener("DOMContentLoaded", () => {
+  inicializar();
+});
