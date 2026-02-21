@@ -215,13 +215,17 @@ function renderChamadosAbertos() {
     coluna.className = "col-12 col-md-6 col-xl-4";
     coluna.innerHTML = `
       <div class="card ticket-card h-100 shadow-sm">
-        <div class="card-body d-flex flex-column gap-2">
-          <h3 class="h6 mb-0">${chamado.client}</h3>
-          <p class="mb-0">${chamado.summary}</p>
-          <small class="text-muted">${chamado.lastUpdate}</small>
-          <div><span class="badge bg-light text-dark border">${chamado.status}</span></div>
-          <div class="container-prioridade-card"></div>
-          <a class="btn btn-primary btn-sm mt-auto align-self-start" href="details.html?id=${encodeURIComponent(chamado.id)}">Ver</a>
+        <div class="card-body ticket-card-body d-flex justify-content-between gap-3">
+          <div class="ticket-card-coluna-principal d-flex flex-column gap-2">
+            <h3 class="h6 mb-0">${chamado.client}</h3>
+            <p class="mb-0">${chamado.summary}</p>
+            <small class="text-muted">${chamado.openedAt}</small>
+          </div>
+          <div class="ticket-card-coluna-acoes d-flex flex-column align-items-end gap-2">
+            <span class="badge bg-light text-dark border">${chamado.status}</span>
+            <div class="container-prioridade-card"></div>
+            <a class="btn btn-primary btn-sm" href="details.html?id=${encodeURIComponent(chamado.id)}">Ver</a>
+          </div>
         </div>
       </div>`;
     coluna.querySelector(".container-prioridade-card").appendChild(createPriorityBadge(chamado.priority));
@@ -241,7 +245,6 @@ function preencherCabecalhoChamado(chamado) {
   cabecalho.innerHTML = `
     <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
       <div>
-        <p class="text-muted mb-1">${chamado.id}</p>
         <h2 class="h5 mb-1">${chamado.client}</h2>
         <p class="mb-2">${chamado.summary}</p>
         <p class="mb-1"><strong>Nº Processo:</strong> ${chamado.processNumber || "Sem processo"}</p>

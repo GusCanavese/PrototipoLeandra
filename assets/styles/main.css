@@ -85,3 +85,26 @@ footer {
 .badge-role {
   font-size: 0.85rem;
 }
+
+
+.ticket-card-body {
+  min-height: 100%;
+}
+
+.ticket-card-coluna-principal {
+  min-width: 0;
+}
+
+.ticket-card-coluna-acoes {
+  flex-shrink: 0;
+}
+
+@media (max-width: 576px) {
+  .ticket-card-body {
+    flex-direction: column;
+  }
+
+  .ticket-card-coluna-acoes {
+    align-items: flex-start !important;
+  }
+}
