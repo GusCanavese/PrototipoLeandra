@@ -60,6 +60,7 @@ const CLIENTES_INICIAIS = [
   {
     nomeCompleto: "Cliente Padrão",
     telefone: "(11) 99999-9999",
+    email: "cliente@padrao.com",
     documento: "000.000.000-00",
     login: "cliente",
     senha: "cliente123",
@@ -70,6 +71,7 @@ const API_BASE_URL = `${window.location.protocol}//${window.location.hostname ||
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
+const TEMPO_MAXIMO_REQUISICAO_MS = 10000;
 
 let chamados = [];
 let usuarioAutenticado = null;
@@ -87,6 +89,7 @@ const credenciaisLogin = {
 };
 
 let clientes = [];
+let operacoesPendentes = 0;
 
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
@@ -99,10 +102,39 @@ function definirBancoProjetoAtivo(nomeBanco) {
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
 }
 
+function alternarLoadingProcessamento(ativo) {
+  const overlay = document.getElementById("overlay-loading-global");
+  if (!overlay) return;
+  overlay.classList.toggle("ativo", ativo);
+  document.body.classList.toggle("ui-bloqueada", ativo);
+}
+
+function iniciarOperacaoAssincrona() {
+  operacoesPendentes += 1;
+  alternarLoadingProcessamento(true);
+}
+
+function finalizarOperacaoAssincrona() {
+  operacoesPendentes = Math.max(0, operacoesPendentes - 1);
+  if (operacoesPendentes === 0) alternarLoadingProcessamento(false);
+}
+
+function garantirOverlayLoading() {
+  if (document.getElementById("overlay-loading-global")) return;
+  const overlay = document.createElement("div");
+  overlay.id = "overlay-loading-global";
+  overlay.className = "overlay-loading-global";
+  overlay.innerHTML = `
+    <div class="loading-content" role="status" aria-live="polite" aria-label="Processando ação">
+      <div class="loading-spinner"></div>
+      <small>Processando...</small>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
 async function carregarProjetosDisponiveis() {
-  const resposta = await fetch(`${API_BASE_URL}/projetos`);
-  if (!resposta.ok) throw new Error("Não foi possível carregar os projetos.");
-  return resposta.json();
+  return requisicaoApi("/projetos", {}, { incluirBancoNoHeader: false });
 }
 
 function formatarDataHoraAtual() {
@@ -137,15 +169,33 @@ function renderizarAnexosComDownload(anexos = []) {
     .join(", ");
 }
 
-async function requisicaoApi(caminho, opcoes = {}) {
-  const resposta = await fetch(`${API_BASE_URL}${caminho}`, {
-    headers: {
-      "Content-Type": "application/json",
-      "X-Project-DB": obterBancoProjetoAtivo(),
-      ...(opcoes.headers || {}),
-    },
-    ...opcoes,
-  });
+async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TEMPO_MAXIMO_REQUISICAO_MS);
+  const incluirBancoNoHeader = opcoesInternas.incluirBancoNoHeader !== false;
+
+  iniciarOperacaoAssincrona();
+
+  let resposta;
+  try {
+    resposta = await fetch(`${API_BASE_URL}${caminho}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtivo() } : {}),
+        ...(opcoes.headers || {}),
+      },
+      ...opcoes,
+      signal: controller.signal,
+    });
+  } catch (erro) {
+    if (erro.name === "AbortError") {
+      throw new Error("Tempo limite excedido. Tente novamente.");
+    }
+    throw erro;
+  } finally {
+    clearTimeout(timeout);
+    finalizarOperacaoAssincrona();
+  }
 
   if (!resposta.ok) {
     const erro = await resposta.text();
@@ -669,12 +719,13 @@ function registrarFormularioCadastroCliente() {
     const novoCliente = {
       nomeCompleto: document.getElementById("campo-cadastro-nome").value.trim(),
       telefone: document.getElementById("campo-cadastro-telefone").value.trim(),
+      email: document.getElementById("campo-cadastro-email").value.trim().toLowerCase(),
       documento: document.getElementById("campo-cadastro-documento").value.trim(),
       login: campoLogin.value.trim().toLowerCase(),
       senha: document.getElementById("campo-cadastro-senha").value.trim(),
     };
 
-    if (!novoCliente.nomeCompleto || !novoCliente.telefone || !novoCliente.documento || !novoCliente.login || !novoCliente.senha) {
+    if (!novoCliente.nomeCompleto || !novoCliente.telefone || !novoCliente.email || !novoCliente.documento || !novoCliente.login || !novoCliente.senha) {
       return;
     }
 
@@ -686,8 +737,16 @@ function registrarFormularioCadastroCliente() {
       return;
     }
 
-    clientes.push(novoCliente);
-    await salvarClienteIndividual(novoCliente);
+    try {
+      clientes.push(novoCliente);
+      await salvarClienteIndividual(novoCliente);
+    } catch (erro) {
+      if (alerta) {
+        alerta.className = "alert alert-danger";
+        alerta.textContent = erro.message || "Não foi possível cadastrar o cliente.";
+      }
+      return;
+    }
 
     if (alerta) {
       alerta.className = "alert alert-success";
@@ -729,6 +788,12 @@ function atualizarNomeUsuarioCabecalho() {
   const campo = document.getElementById("nome-usuario-cabecalho");
   if (!campo) return;
   campo.textContent = `Usuário: ${usuarioAutenticado?.usuario || "-"}`;
+}
+
+function atualizarAcoesCabecalhoAdministrador() {
+  const botoesAdmin = document.querySelectorAll("[data-acao-admin='cadastrar-usuario']");
+  const exibir = usuarioAutenticado?.tipo === "Administrador";
+  botoesAdmin.forEach((botao) => botao.classList.toggle("d-none", !exibir));
 }
 
 function registrarBotoesTrocaUsuario() {
@@ -861,6 +926,7 @@ function redirecionarParaLogin(forcarLogout = false) {
 }
 
 async function inicializar() {
+  garantirOverlayLoading();
   definirUsuarioAutenticadoSeSalvo();
 
   const paginaDetalhes = document.getElementById("detalhes-chamado");
@@ -926,6 +992,7 @@ async function inicializar() {
   }
 
   atualizarNomeUsuarioCabecalho();
+  atualizarAcoesCabecalhoAdministrador();
   registrarBotoesTrocaUsuario();
 
   if (typeof BroadcastChannel !== "undefined") {
