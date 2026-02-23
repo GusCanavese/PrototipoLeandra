@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import datetime
 
@@ -10,11 +11,12 @@ from flask import Flask, jsonify, request
 # password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
 # porta = 15192
 # banco_padrao = "teste"
-host = "127.0.0.1"
-user = "root"
-password = ""
-porta = 3306
-banco_padrao = "escritorioLocal"
+
+host = os.getenv("DB_HOST", "ballast.proxy.rlwy.net")
+user = os.getenv("DB_USER", "root")
+password = os.getenv("DB_PASSWORD", "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO")
+porta = int(os.getenv("DB_PORT", "15192"))
+banco_padrao = os.getenv("DB_NAME", "teste")
 
 app = Flask(__name__)
 estrutura_inicializada = set()
@@ -33,7 +35,12 @@ def abrir_conexao(nome_banco=None):
     }
     if nome_banco:
         params["db"] = nome_banco
-    return MySQLdb.connect(**params)
+    try:
+        return MySQLdb.connect(**params)
+    except MySQLdb.MySQLError as erro:
+        raise RuntimeError(
+            "Falha ao conectar no MySQL local. Confira DB_HOST, DB_PORT, DB_USER e DB_PASSWORD."
+        ) from erro
 
 
 def responder_json(payload, status=200):
@@ -151,60 +158,6 @@ def garantir_estrutura(nome_banco):
         )
 
     cursor.execute("SELECT COUNT(*) FROM chamados")
-    if cursor.fetchone()[0] == 0:
-        chamados_iniciais = [
-            (
-                "C-1",
-                "Clínica Horizonte",
-                "cliente",
-                "Falha no acesso ao prontuário eletrônico",
-                "Usuários não conseguem salvar novos pacientes no sistema.",
-                "Alta",
-                "Em andamento",
-                "0001234-12.2024.8.26.0001",
-                1,
-                "30",
-                "Escritório Lima",
-                "08/06/2024",
-                "10/06/2024 14:35",
-            ),
-            (
-                "C-2",
-                "Empresa Sol Nascente",
-                "cliente",
-                "Erro ao anexar comprovante no portal",
-                "O upload finaliza, mas o arquivo não fica visível no histórico.",
-                "Média",
-                "Aberto",
-                "0001250-22.2024.8.26.0001",
-                0,
-                "",
-                "",
-                "11/06/2024",
-                "11/06/2024 09:20",
-            ),
-        ]
-        cursor.executemany(
-            """
-            INSERT INTO chamados (
-                id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            chamados_iniciais,
-        )
-        cursor.execute(
-            """
-            INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            ("C-2", "Cliente", "Anexo enviado para validação.", "11/06/2024 09:20", json.dumps(["comprovante.pdf"])),
-        )
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-    estrutura_inicializada.add(nome_banco)
 
 
 def listar_clientes(nome_banco):
@@ -379,7 +332,10 @@ def autenticar_usuario(nome_banco, usuario, senha):
 def api_projetos():
     if request.method == "OPTIONS":
         return responder_json({"ok": True})
-    return responder_json({"projetos": listar_bancos_disponiveis(), "padrao": banco_padrao})
+    try:
+        return responder_json({"projetos": listar_bancos_disponiveis(), "padrao": banco_padrao})
+    except RuntimeError as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 500)
 
 
 @app.route("/api/clientes", methods=["GET", "PUT", "OPTIONS"])
@@ -389,7 +345,7 @@ def api_clientes():
     try:
         nome_banco = obter_banco_requisicao()
         garantir_estrutura(nome_banco)
-    except ValueError as erro:
+    except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
     if request.method == "GET":
@@ -407,7 +363,7 @@ def api_chamados():
     try:
         nome_banco = obter_banco_requisicao()
         garantir_estrutura(nome_banco)
-    except ValueError as erro:
+    except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
     if request.method == "GET":
@@ -434,7 +390,7 @@ def api_login():
         if nome_banco not in listar_bancos_disponiveis():
             raise ValueError(f"Banco '{nome_banco}' não encontrado.")
         garantir_estrutura(nome_banco)
-    except ValueError as erro:
+    except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
     autenticado = autenticar_usuario(nome_banco, usuario, senha)
@@ -447,5 +403,9 @@ def api_login():
 
 
 if __name__ == "__main__":
-    garantir_estrutura(banco_padrao)
+    try:
+        garantir_estrutura(banco_padrao)
+    except RuntimeError as erro:
+        print(str(erro))
+        raise SystemExit(1)
     app.run(host="0.0.0.0", port=5000, debug=True)
