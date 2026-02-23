@@ -201,85 +201,6 @@ def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     return numero
 
 
-def garantir_estrutura(nome_banco):
-    if nome_banco in estrutura_inicializada:
-        return
-
-    conn = abrir_conexao(nome_banco)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS usuarios (
-                usuario VARCHAR(100) PRIMARY KEY,
-                senha VARCHAR(255) NOT NULL,
-                tipo VARCHAR(30) NOT NULL,
-                nome_completo VARCHAR(255) NULL,
-                telefone VARCHAR(60) NULL,
-                documento VARCHAR(60) NULL,
-                email VARCHAR(60) NULL
-            )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chamados (
-                id_chamado VARCHAR(30) PRIMARY KEY,
-                cliente VARCHAR(255) NOT NULL,
-                login_cliente VARCHAR(100) NOT NULL,
-                resumo TEXT NOT NULL,
-                descricao LONGTEXT,
-                prioridade VARCHAR(20) NOT NULL,
-                status VARCHAR(30) NOT NULL,
-                numero_processo VARCHAR(100),
-                parceria TINYINT(1) DEFAULT 0,
-                parceria_porcentagem VARCHAR(10),
-                parceria_com VARCHAR(255),
-                abertura VARCHAR(30),
-                ultima_atualizacao VARCHAR(30)
-            )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chamado_atualizacoes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                id_chamado VARCHAR(30) NOT NULL,
-                autor VARCHAR(100) NOT NULL,
-                mensagem LONGTEXT NOT NULL,
-                data_atualizacao VARCHAR(30) NOT NULL,
-                anexos LONGTEXT,
-                FOREIGN KEY (id_chamado) REFERENCES chamados(id_chamado) ON DELETE CASCADE
-            )
-            """
-        )
-
-        cursor.execute("SELECT COUNT(*) FROM usuarios WHERE usuario = %s", ("tecnico",))
-        if cursor.fetchone()[0] == 0:
-            cursor.execute(
-                """
-                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                ("tecnico", "tecnico123", "Técnico", "Técnico Padrão", None, None),
-            )
-
-        cursor.execute("SELECT COUNT(*) FROM usuarios WHERE usuario = %s", ("cliente",))
-        if cursor.fetchone()[0] == 0:
-            cursor.execute(
-                """
-                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                ("cliente", "cliente123", "Cliente", "Cliente Padrão", "(11) 99999-9999", "000.000.000-00"),
-            )
-
-        cursor.execute("SELECT COUNT(*) FROM chamados")
-        conn.commit()
-        estrutura_inicializada.add(nome_banco)
-    finally:
-        cursor.close()
-        pool_manager.release(conn, nome_banco)
 
 
 def executar_select(nome_banco, query_id, sql, params=None, fetch_one=False, dict_cursor=True, funcao=""):
@@ -613,7 +534,6 @@ def api_clientes():
         return responder_json({"ok": True})
     try:
         nome_banco = obter_banco_requisicao()
-        garantir_estrutura(nome_banco)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
@@ -629,7 +549,6 @@ def api_clientes():
 def api_cliente_inserir():
     try:
         nome_banco = obter_banco_requisicao()
-        garantir_estrutura(nome_banco)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
@@ -647,7 +566,6 @@ def api_chamados():
         return responder_json({"ok": True})
     try:
         nome_banco = obter_banco_requisicao()
-        garantir_estrutura(nome_banco)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
@@ -668,7 +586,6 @@ def api_chamados():
 def api_chamado_inserir():
     try:
         nome_banco = obter_banco_requisicao()
-        garantir_estrutura(nome_banco)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
@@ -683,7 +600,6 @@ def api_chamado_individual(id_chamado):
         return responder_json({"ok": True})
     try:
         nome_banco = obter_banco_requisicao()
-        garantir_estrutura(nome_banco)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
@@ -713,7 +629,6 @@ def api_login():
             raise ValueError("Nome de banco inválido.")
         if nome_banco not in listar_bancos_disponiveis():
             raise ValueError(f"Banco '{nome_banco}' não encontrado.")
-        garantir_estrutura(nome_banco)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
@@ -727,9 +642,5 @@ def api_login():
 
 
 if __name__ == "__main__":
-    try:
-        garantir_estrutura(banco_padrao)
-    except RuntimeError as erro:
-        print(str(erro))
-        raise SystemExit(1)
+
     app.run(host="0.0.0.0", port=5000, debug=True)
