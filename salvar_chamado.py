@@ -1,5 +1,6 @@
 import json
 import re
+import asyncio
 from datetime import datetime, timedelta
 from threading import Lock, RLock
 
@@ -142,6 +143,10 @@ def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     if numero < minimo or numero > maximo:
         raise ValueError(f"Parâmetro deve estar entre {minimo} e {maximo}.")
     return numero
+
+
+async def executar_em_thread(funcao, *args, **kwargs):
+    return await asyncio.to_thread(funcao, *args, **kwargs)
 
 
 def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=True):
@@ -422,113 +427,118 @@ def tratar_erro_mysql(erro):
 
 
 @app.route("/api/projetos", methods=["GET"])
-def api_projetos_listar():
+async def api_projetos_listar():
     try:
-        return responder_json({"projetos": listar_bancos_disponiveis(), "padrao": DB_NAME_DEFAULT})
+        projetos = await executar_em_thread(listar_bancos_disponiveis)
+        return responder_json({"projetos": projetos, "padrao": DB_NAME_DEFAULT})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
 
 @app.route("/api/clientes", methods=["GET"])
-def api_clientes_listar():
+async def api_clientes_listar():
     try:
-        nome_banco = obter_banco_requisicao()
-        return responder_json(listar_clientes(nome_banco))
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        clientes = await executar_em_thread(listar_clientes, nome_banco)
+        return responder_json(clientes)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/clientes", methods=["PUT"])
-def api_clientes_substituir():
+async def api_clientes_substituir():
     try:
-        nome_banco = obter_banco_requisicao()
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
         clientes = request.json or []
-        substituir_clientes(nome_banco, clientes)
+        await executar_em_thread(substituir_clientes, nome_banco, clientes)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/clientes", methods=["POST"])
-def api_cliente_inserir():
+async def api_cliente_inserir():
     try:
-        nome_banco = obter_banco_requisicao()
-        inserir_cliente(nome_banco, request.json or {})
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        await executar_em_thread(inserir_cliente, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/chamados", methods=["GET"])
-def api_chamados_listar():
+async def api_chamados_listar():
     try:
-        nome_banco = obter_banco_requisicao()
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
         limite = parse_int_param(request.args.get("limit"), padrao=None, minimo=1, maximo=1000)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
-        return responder_json(listar_chamados(nome_banco, limite=limite, offset=offset))
+        chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
+        return responder_json(chamados)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/chamados", methods=["PUT"])
-def api_chamados_substituir():
+async def api_chamados_substituir():
     try:
-        nome_banco = obter_banco_requisicao()
-        substituir_chamados(nome_banco, request.json or [])
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/chamados", methods=["POST"])
-def api_chamado_inserir():
+async def api_chamado_inserir():
     try:
-        nome_banco = obter_banco_requisicao()
-        salvar_chamado_individual(nome_banco, request.json or {})
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/chamados/<id_chamado>", methods=["PUT"])
-def api_chamado_atualizar(id_chamado):
+async def api_chamado_atualizar(id_chamado):
     try:
-        nome_banco = obter_banco_requisicao()
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
         chamado = request.json or {}
         if not chamado.get("id"):
             chamado["id"] = id_chamado
-        salvar_chamado_individual(nome_banco, chamado)
+        await executar_em_thread(salvar_chamado_individual, nome_banco, chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/chamados/<id_chamado>", methods=["DELETE"])
-def api_chamado_remover(id_chamado):
+async def api_chamado_remover(id_chamado):
     try:
-        nome_banco = obter_banco_requisicao()
-        excluir_chamado(nome_banco, id_chamado)
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/login", methods=["POST"])
-def api_login():
+async def api_login():
     dados = request.json or {}
     usuario = (dados.get("usuario") or "").strip()
     senha = (dados.get("senha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or obter_banco_requisicao()
-        if not nome_banco_valido(nome_banco):
+        nome_banco = dados.get("banco") or await executar_em_thread(obter_banco_requisicao)
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
+        if not valido:
             raise ValueError("Nome de banco inválido.")
-        if nome_banco not in listar_bancos_disponiveis():
+        bancos_disponiveis = await executar_em_thread(listar_bancos_disponiveis)
+        if nome_banco not in bancos_disponiveis:
             raise ValueError(f"Banco '{nome_banco}' não encontrado.")
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
-    autenticado = autenticar_usuario(nome_banco, usuario, senha)
+    autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
     if not autenticado:
         return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 
