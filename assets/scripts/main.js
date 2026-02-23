@@ -171,6 +171,13 @@ async function salvarClientes() {
   });
 }
 
+async function salvarClienteIndividual(cliente) {
+  await requisicaoApi("/clientes", {
+    method: "POST",
+    body: JSON.stringify(cliente),
+  });
+}
+
 function obterClientePorLogin(login) {
   if (!login) return null;
   return clientes.find((cliente) => cliente.login.toLowerCase() === login.toLowerCase()) || null;
@@ -220,11 +227,30 @@ async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = tr
   }
 
   if (atualizarTela) atualizarTelaComChamadosAtualizados();
+  notificarAtualizacaoChamados();
+}
+
+function notificarAtualizacaoChamados() {
   if (typeof BroadcastChannel !== "undefined") {
     const canal = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
     canal.postMessage({ atualizadoEm: Date.now() });
     canal.close();
   }
+}
+
+async function salvarChamadoIndividual(chamado) {
+  await requisicaoApi(`/chamados/${encodeURIComponent(chamado.id)}`, {
+    method: "PUT",
+    body: JSON.stringify(chamado),
+  });
+  notificarAtualizacaoChamados();
+}
+
+async function excluirChamadoIndividual(idChamado) {
+  await requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`, {
+    method: "DELETE",
+  });
+  notificarAtualizacaoChamados();
 }
 
 function obterUsuarioSalvo() {
@@ -449,7 +475,7 @@ function registrarFormularioAtualizacao(chamado) {
     chamado.status = usuarioAutenticado?.tipo === "Cliente" ? chamado.status : status;
     chamado.lastUpdate = nova.date;
     try {
-      await salvarChamados();
+      await salvarChamadoIndividual(chamado);
     } catch (erro) {
       alert(erro.message || "Não foi possível salvar a atualização do chamado.");
       return;
@@ -464,7 +490,7 @@ function registrarFormularioAtualizacao(chamado) {
     chamado.status = "Concluído";
     chamado.lastUpdate = formatarDataHoraAtual();
     try {
-      await salvarChamados();
+      await salvarChamadoIndividual(chamado);
     } catch (erro) {
       alert(erro.message || "Não foi possível concluir o chamado.");
       return;
@@ -474,9 +500,8 @@ function registrarFormularioAtualizacao(chamado) {
   });
 
   btnExcluir?.addEventListener("click", async () => {
-    chamados = chamados.filter((item) => item.id !== chamado.id);
     try {
-      await salvarChamados();
+      await excluirChamadoIndividual(chamado.id);
     } catch (erro) {
       alert(erro.message || "Não foi possível excluir o chamado.");
       return;
@@ -613,7 +638,11 @@ function registrarFormularioCriacao() {
 
     chamados.unshift(novoChamado);
     try {
-      await salvarChamados();
+      await requisicaoApi("/chamados", {
+        method: "POST",
+        body: JSON.stringify(novoChamado),
+      });
+      notificarAtualizacaoChamados();
     } catch (erro) {
       if (alertaCriacao) {
         alertaCriacao.className = "alert alert-danger";
@@ -658,7 +687,7 @@ function registrarFormularioCadastroCliente() {
     }
 
     clientes.push(novoCliente);
-    await salvarClientes();
+    await salvarClienteIndividual(novoCliente);
 
     if (alerta) {
       alerta.className = "alert alert-success";
@@ -707,7 +736,7 @@ function registrarBotoesTrocaUsuario() {
     botao.addEventListener("click", (e) => {
       e.preventDefault();
       limparAutenticacao();
-      redirecionarParaLogin();
+      redirecionarParaLogin(true);
     });
   });
 }
@@ -715,6 +744,14 @@ function registrarBotoesTrocaUsuario() {
 async function configurarTelaLogin() {
   const form = document.getElementById("form-login");
   if (!form) return;
+  const params = new URLSearchParams(window.location.search);
+  const forcarLogout = params.get("logout") === "1";
+  if (forcarLogout) {
+    limparAutenticacao();
+    params.delete("logout");
+    const novaQuery = params.toString();
+    window.history.replaceState({}, "", `login.html${novaQuery ? `?${novaQuery}` : ""}`);
+  }
   if (usuarioAutenticado) {
     window.location.href = usuarioAutenticado.tipo === "Técnico" ? "index.html" : "cliente.html";
     return;
@@ -819,8 +856,8 @@ function atualizarTelaComChamadosAtualizados() {
   if (document.getElementById("detalhes-chamado")) carregarDetalhesChamado();
 }
 
-function redirecionarParaLogin() {
-  window.location.href = "login.html";
+function redirecionarParaLogin(forcarLogout = false) {
+  window.location.href = forcarLogout ? "login.html?logout=1" : "login.html";
 }
 
 async function inicializar() {
@@ -838,8 +875,7 @@ async function inicializar() {
   const paginaProtegida = paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin;
   if (paginaProtegida) {
     try {
-      await carregarChamadosSalvos();
-      await carregarClientesSalvos();
+      await Promise.all([carregarChamadosSalvos(), carregarClientesSalvos()]);
     } catch {
       alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtivo()}'. Verifique o backend Python.`);
       return;

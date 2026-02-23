@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import MySQLdb
 from flask import Flask, jsonify, request
@@ -20,6 +20,7 @@ banco_padrao = os.getenv("DB_NAME", "teste")
 
 app = Flask(__name__)
 estrutura_inicializada = set()
+bancos_cache = {"valores": [], "expira_em": datetime.min}
 
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
@@ -57,12 +58,17 @@ def nome_banco_valido(nome_banco):
 
 
 def listar_bancos_disponiveis():
+    if datetime.now() < bancos_cache["expira_em"] and bancos_cache["valores"]:
+        return bancos_cache["valores"]
+
     conn = abrir_conexao()
     cursor = conn.cursor()
     cursor.execute("SHOW DATABASES")
     bancos = [linha[0] for linha in cursor.fetchall() if linha[0] not in SISTEMA_DATABASES]
     cursor.close()
     conn.close()
+    bancos_cache["valores"] = bancos
+    bancos_cache["expira_em"] = datetime.now() + timedelta(seconds=20)
     return bancos
 
 
@@ -100,7 +106,8 @@ def garantir_estrutura(nome_banco):
             tipo VARCHAR(30) NOT NULL,
             nome_completo VARCHAR(255) NULL,
             telefone VARCHAR(60) NULL,
-            documento VARCHAR(60) NULL
+            documento VARCHAR(60) NULL,
+            email VARCHAR(60) NULL
         )
         """
     )
@@ -204,6 +211,27 @@ def substituir_clientes(nome_banco, clientes):
                 cliente.get("documento") or None,
             ),
         )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def inserir_cliente(nome_banco, cliente):
+    conn = abrir_conexao(nome_banco)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
+        VALUES (%s, %s, 'Cliente', %s, %s, %s)
+        """,
+        (
+            cliente["login"],
+            cliente["senha"],
+            cliente.get("nomeCompleto") or None,
+            cliente.get("telefone") or None,
+            cliente.get("documento") or None,
+        ),
+    )
     conn.commit()
     cursor.close()
     conn.close()
@@ -315,6 +343,76 @@ def substituir_chamados(nome_banco, chamados):
     conn.close()
 
 
+def salvar_chamado_individual(nome_banco, chamado):
+    conn = abrir_conexao(nome_banco)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO chamados (
+            id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
+            numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            cliente = VALUES(cliente),
+            login_cliente = VALUES(login_cliente),
+            resumo = VALUES(resumo),
+            descricao = VALUES(descricao),
+            prioridade = VALUES(prioridade),
+            status = VALUES(status),
+            numero_processo = VALUES(numero_processo),
+            parceria = VALUES(parceria),
+            parceria_porcentagem = VALUES(parceria_porcentagem),
+            parceria_com = VALUES(parceria_com),
+            abertura = VALUES(abertura),
+            ultima_atualizacao = VALUES(ultima_atualizacao)
+        """,
+        (
+            chamado["id"],
+            chamado["client"],
+            chamado["clienteLogin"],
+            chamado["summary"],
+            chamado["description"],
+            chamado["priority"],
+            chamado["status"],
+            chamado["processNumber"],
+            1 if chamado.get("hasPartnership") else 0,
+            chamado.get("partnershipPercent", ""),
+            chamado.get("partnershipWith", ""),
+            chamado["openedAt"],
+            chamado["lastUpdate"],
+        ),
+    )
+
+    cursor.execute("DELETE FROM chamado_atualizacoes WHERE id_chamado = %s", (chamado["id"],))
+    for atualizacao in chamado.get("updates", []):
+        cursor.execute(
+            """
+            INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                chamado["id"],
+                atualizacao.get("author", "Técnico"),
+                atualizacao.get("message", ""),
+                atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")),
+                json.dumps(atualizacao.get("attachments", []), ensure_ascii=False),
+            ),
+        )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def excluir_chamado(nome_banco, id_chamado):
+    conn = abrir_conexao(nome_banco)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 def autenticar_usuario(nome_banco, usuario, senha):
     conn = abrir_conexao(nome_banco)
     cursor = conn.cursor(MySQLdb.cursors.DictCursor)
@@ -356,6 +454,22 @@ def api_clientes():
     return responder_json({"ok": True})
 
 
+@app.route("/api/clientes", methods=["POST"])
+def api_cliente_inserir():
+    try:
+        nome_banco = obter_banco_requisicao()
+        garantir_estrutura(nome_banco)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+    cliente = request.json or {}
+    try:
+        inserir_cliente(nome_banco, cliente)
+    except MySQLdb.MySQLError as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+    return responder_json({"ok": True}, 201)
+
+
 @app.route("/api/chamados", methods=["GET", "PUT", "OPTIONS"])
 def api_chamados():
     if request.method == "OPTIONS":
@@ -371,6 +485,40 @@ def api_chamados():
 
     chamados = request.json or []
     substituir_chamados(nome_banco, chamados)
+    return responder_json({"ok": True})
+
+
+@app.route("/api/chamados", methods=["POST"])
+def api_chamado_inserir():
+    try:
+        nome_banco = obter_banco_requisicao()
+        garantir_estrutura(nome_banco)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+    chamado = request.json or {}
+    salvar_chamado_individual(nome_banco, chamado)
+    return responder_json({"ok": True}, 201)
+
+
+@app.route("/api/chamados/<id_chamado>", methods=["PUT", "DELETE", "OPTIONS"])
+def api_chamado_individual(id_chamado):
+    if request.method == "OPTIONS":
+        return responder_json({"ok": True})
+    try:
+        nome_banco = obter_banco_requisicao()
+        garantir_estrutura(nome_banco)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+    if request.method == "DELETE":
+        excluir_chamado(nome_banco, id_chamado)
+        return responder_json({"ok": True})
+
+    chamado = request.json or {}
+    if not chamado.get("id"):
+        chamado["id"] = id_chamado
+    salvar_chamado_individual(nome_banco, chamado)
     return responder_json({"ok": True})
 
 
