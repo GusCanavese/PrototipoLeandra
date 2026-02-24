@@ -1,8 +1,10 @@
 import json
 import re
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from threading import Lock, RLock
+from queue import Empty, Queue
+from threading import Lock
 
 import MySQLdb
 from flask import Flask, jsonify, make_response, request
@@ -12,6 +14,8 @@ DB_USER = "root"
 DB_PASSWORD = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
 DB_PORT = 15192
 DB_NAME_DEFAULT = "teste"
+POOL_SIZE = 12
+DB_CACHE_TTL_MINUTOS = 20
 
 app = Flask(__name__)
 
@@ -19,8 +23,8 @@ SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
 
 _connection_lock = Lock()
-_connections = {}
-_db_locks = {}
+_pools = {}
+_indices_garantidos = set()
 
 
 def _connect(db_name=None):
@@ -42,31 +46,58 @@ def _connect(db_name=None):
     return conn
 
 
-def obter_conexao(nome_banco=None):
+def _criar_pool(nome_banco=None):
+    fila = Queue(maxsize=POOL_SIZE)
+    for _ in range(POOL_SIZE):
+        fila.put(_connect(nome_banco))
+    return fila
+
+
+@contextmanager
+def conexao_pool(nome_banco=None):
     chave = nome_banco or "_sem_banco"
     with _connection_lock:
-        conn = _connections.get(chave)
-        if conn is None:
-            conn = _connect(nome_banco)
-            _connections[chave] = conn
-            return conn
+        if chave not in _pools:
+            _pools[chave] = _criar_pool(nome_banco)
+        pool = _pools[chave]
+
+    try:
+        conn = pool.get(timeout=5)
+    except Empty as erro:
+        raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
+
+    try:
+        yield conn
+    finally:
         try:
-            conn.ping(True)
-        except MySQLdb.MySQLError:
-            conn = _connect(nome_banco)
-            _connections[chave] = conn
-        return conn
+            pool.put_nowait(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
-
-def obter_lock_banco(nome_banco=None):
+def _executar_com_retry(nome_banco, operacao):
     chave = nome_banco or "_sem_banco"
-    with _connection_lock:
-        lock = _db_locks.get(chave)
-        if lock is None:
-            lock = RLock()
-            _db_locks[chave] = lock
-        return lock
+    for tentativa in range(2):
+        with conexao_pool(nome_banco) as conn:
+            try:
+                return operacao(conn)
+            except MySQLdb.OperationalError as erro:
+                mensagem = str(erro).lower()
+                erro_recuperavel = any(
+                    termo in mensagem for termo in ["server has gone away", "lost connection", "connection was killed"]
+                )
+                if tentativa == 1 or not erro_recuperavel:
+                    raise
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                with _connection_lock:
+                    _pools[chave].put(_connect(nome_banco))
+
 
 def aplicar_headers_cors(resposta):
     resposta.headers["Access-Control-Allow-Origin"] = "*"
@@ -101,15 +132,14 @@ def listar_bancos_disponiveis():
     if datetime.now() < bancos_cache["expira_em"] and bancos_cache["valores"]:
         return bancos_cache["valores"]
 
-    with obter_lock_banco():
-        conn = obter_conexao()
+    with conexao_pool() as conn:
         cursor = conn.cursor()
         cursor.execute("SHOW DATABASES")
         bancos = [linha[0] for linha in cursor.fetchall() if linha[0] not in SISTEMA_DATABASES]
         cursor.close()
 
     bancos_cache["valores"] = bancos
-    bancos_cache["expira_em"] = datetime.now() + timedelta(seconds=20)
+    bancos_cache["expira_em"] = datetime.now() + timedelta(minutes=DB_CACHE_TTL_MINUTOS)
     return bancos
 
 
@@ -117,8 +147,13 @@ def obter_banco_requisicao():
     nome_banco = request.headers.get("X-Project-DB", DB_NAME_DEFAULT)
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
-    if nome_banco not in listar_bancos_disponiveis():
-        raise ValueError(f"Banco '{nome_banco}' não encontrado.")
+    try:
+        with conexao_pool(nome_banco):
+            pass
+    except RuntimeError as erro:
+        raise ValueError(str(erro)) from erro
+    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError) as erro:
+        raise ValueError(f"Banco '{nome_banco}' não encontrado.") from erro
     return nome_banco
 
 
@@ -150,8 +185,7 @@ async def executar_em_thread(funcao, *args, **kwargs):
 
 
 def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=True):
-    with obter_lock_banco(nome_banco):
-        conn = obter_conexao(nome_banco)
+    def operacao(conn):
         cursor_cls = MySQLdb.cursors.DictCursor if dict_cursor else None
         cursor = conn.cursor(cursor_cls) if cursor_cls else conn.cursor()
         cursor.execute(sql, params or ())
@@ -159,14 +193,29 @@ def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=T
         cursor.close()
         return dados
 
+    return _executar_com_retry(nome_banco, operacao)
+
 
 def executar_write(nome_banco, sql, params=None):
-    with obter_lock_banco(nome_banco):
-        conn = obter_conexao(nome_banco)
+    def operacao(conn):
         cursor = conn.cursor()
         cursor.execute(sql, params or ())
         conn.commit()
         cursor.close()
+
+    _executar_com_retry(nome_banco, operacao)
+
+
+def executar_transacao(nome_banco, callback):
+    def operacao(conn):
+        try:
+            callback(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    _executar_com_retry(nome_banco, operacao)
 
 
 def listar_clientes(nome_banco):
@@ -192,8 +241,7 @@ def listar_clientes(nome_banco):
 
 
 def substituir_clientes(nome_banco, clientes):
-    with obter_lock_banco(nome_banco):
-        conn = obter_conexao(nome_banco)
+    def transacao(conn):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM usuarios WHERE tipo = 'Cliente'")
         for cliente in clientes:
@@ -210,8 +258,9 @@ def substituir_clientes(nome_banco, clientes):
                     cliente.get("documento") or None,
                 ),
             )
-        conn.commit()
         cursor.close()
+
+    executar_transacao(nome_banco, transacao)
 
 
 def inserir_cliente(nome_banco, cliente):
@@ -231,70 +280,103 @@ def inserir_cliente(nome_banco, cliente):
     )
 
 
-def listar_chamados(nome_banco, limite=None, offset=0):
-    sql = """
+def garantir_indices(nome_banco):
+    if nome_banco in _indices_garantidos:
+        return
+
+    def transacao(conn):
+        cursor = conn.cursor()
+        cursor.execute("CREATE INDEX idx_chamados_ultima_id ON chamados (ultima_atualizacao, id_chamado)")
+        cursor.execute("CREATE INDEX idx_chamado_atualizacoes_chamado_data ON chamado_atualizacoes (id_chamado, data_atualizacao)")
+        cursor.close()
+
+    try:
+        executar_transacao(nome_banco, transacao)
+    except MySQLdb.MySQLError:
+        pass
+    _indices_garantidos.add(nome_banco)
+
+
+def listar_chamados(nome_banco, limite=50, offset=0):
+    garantir_indices(nome_banco)
+    chamados = executar_select(
+        nome_banco,
+        """
+        SELECT id_chamado, cliente, resumo, prioridade, status, abertura, ultima_atualizacao
+        FROM chamados
+        ORDER BY ultima_atualizacao DESC, id_chamado DESC
+        LIMIT %s OFFSET %s
+        """,
+        (limite, offset),
+    )
+    return [
+        {
+            "id": c["id_chamado"],
+            "client": c["cliente"],
+            "summary": c["resumo"],
+            "priority": c["prioridade"],
+            "status": c["status"],
+            "openedAt": c["abertura"] or "",
+            "lastUpdate": c["ultima_atualizacao"] or "",
+        }
+        for c in chamados
+    ]
+
+
+def obter_chamado_detalhe(nome_banco, id_chamado):
+    chamado = executar_select(
+        nome_banco,
+        """
         SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
         FROM chamados
-        ORDER BY id_chamado DESC
-    """
-    params = []
-    if limite is not None:
-        sql += " LIMIT %s OFFSET %s"
-        params.extend([limite, offset])
+        WHERE id_chamado = %s
+        """,
+        (id_chamado,),
+        fetch_one=True,
+    )
+    if not chamado:
+        return None
 
-    chamados = executar_select(nome_banco, sql, tuple(params))
-    chamados_ids = [c["id_chamado"] for c in chamados]
+    atualizacoes = executar_select(
+        nome_banco,
+        """
+        SELECT autor, mensagem, data_atualizacao, anexos
+        FROM chamado_atualizacoes
+        WHERE id_chamado = %s
+        ORDER BY id DESC
+        """,
+        (id_chamado,),
+    )
 
-    atualizacoes = []
-    if chamados_ids:
-        placeholders = ", ".join(["%s"] * len(chamados_ids))
-        atualizacoes = executar_select(
-            nome_banco,
-            f"""
-            SELECT id_chamado, autor, mensagem, data_atualizacao, anexos
-            FROM chamado_atualizacoes
-            WHERE id_chamado IN ({placeholders})
-            ORDER BY id DESC
-            """,
-            tuple(chamados_ids),
-        )
-
-    mapa = {}
-    for atu in atualizacoes:
-        mapa.setdefault(atu["id_chamado"], []).append(
+    return {
+        "id": chamado["id_chamado"],
+        "client": chamado["cliente"],
+        "clienteLogin": chamado["login_cliente"],
+        "summary": chamado["resumo"],
+        "description": chamado["descricao"] or "",
+        "priority": chamado["prioridade"],
+        "status": chamado["status"],
+        "processNumber": chamado["numero_processo"] or "",
+        "hasPartnership": bool(chamado["parceria"]),
+        "partnershipPercent": chamado["parceria_porcentagem"] or "",
+        "partnershipWith": chamado["parceria_com"] or "",
+        "openedAt": chamado["abertura"] or "",
+        "lastUpdate": chamado["ultima_atualizacao"] or "",
+        "updates": [
             {
                 "author": atu["autor"],
                 "message": atu["mensagem"],
                 "date": atu["data_atualizacao"],
                 "attachments": normalizar_anexos(atu["anexos"]),
             }
-        )
-
-    return [
-        {
-            "id": c["id_chamado"],
-            "client": c["cliente"],
-            "clienteLogin": c["login_cliente"],
-            "summary": c["resumo"],
-            "description": c["descricao"] or "",
-            "priority": c["prioridade"],
-            "status": c["status"],
-            "processNumber": c["numero_processo"] or "",
-            "hasPartnership": bool(c["parceria"]),
-            "partnershipPercent": c["parceria_porcentagem"] or "",
-            "partnershipWith": c["parceria_com"] or "",
-            "openedAt": c["abertura"] or "",
-            "lastUpdate": c["ultima_atualizacao"] or "",
-            "updates": mapa.get(c["id_chamado"], []),
-        }
-        for c in chamados
-    ]
+            for atu in atualizacoes
+        ],
+    }
 
 
 def substituir_chamados(nome_banco, chamados):
-    with obter_lock_banco(nome_banco):
-        conn = obter_conexao(nome_banco)
+    def transacao(conn):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM chamado_atualizacoes")
         cursor.execute("DELETE FROM chamados")
@@ -339,13 +421,13 @@ def substituir_chamados(nome_banco, chamados):
                     ),
                 )
 
-        conn.commit()
         cursor.close()
+
+    executar_transacao(nome_banco, transacao)
 
 
 def salvar_chamado_individual(nome_banco, chamado):
-    with obter_lock_banco(nome_banco):
-        conn = obter_conexao(nome_banco)
+    def transacao(conn):
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -400,8 +482,9 @@ def salvar_chamado_individual(nome_banco, chamado):
                 ),
             )
 
-        conn.commit()
         cursor.close()
+
+    executar_transacao(nome_banco, transacao)
 
 
 def excluir_chamado(nome_banco, id_chamado):
@@ -423,7 +506,6 @@ def autenticar_usuario(nome_banco, usuario, senha):
 @app.errorhandler(MySQLdb.MySQLError)
 def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
-
 
 
 @app.route("/api/projetos", methods=["GET"])
@@ -470,10 +552,22 @@ async def api_cliente_inserir():
 async def api_chamados_listar():
     try:
         nome_banco = await executar_em_thread(obter_banco_requisicao)
-        limite = parse_int_param(request.args.get("limit"), padrao=None, minimo=1, maximo=1000)
+        limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
         chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
         return responder_json(chamados)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/chamados/<id_chamado>", methods=["GET"])
+async def api_chamado_detalhar(id_chamado):
+    try:
+        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado)
+        if not chamado:
+            return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
+        return responder_json(chamado)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 

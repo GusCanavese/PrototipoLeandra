@@ -1,3 +1,0 @@
-permitir alteração no status do processo
-caso o cliente tenha atualizado o chamado, para o tecnico deve aparecer o chamado em questão como se tivesse uma notificação
-no cadastrar usuario, também deve ser póssivel cadastrar o email

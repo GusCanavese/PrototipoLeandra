@@ -68,10 +68,14 @@ const CLIENTES_INICIAIS = [
 ];
 
 const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
+const API_BASE_URLS = Array.from(new Set([API_BASE_URL, "http://localhost:5000/api"]));
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
-const TEMPO_MAXIMO_REQUISICAO_MS = 10000;
+const CHAVE_CACHE_CHAMADOS = "cacheChamados";
+const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
+const TEMPO_MAXIMO_REQUISICAO_MS = 18000;
+const RETRY_BACKOFF_MS = [300, 800, 1500];
 
 let chamados = [];
 let usuarioAutenticado = null;
@@ -170,44 +174,114 @@ function renderizarAnexosComDownload(anexos = []) {
 }
 
 async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TEMPO_MAXIMO_REQUISICAO_MS);
   const incluirBancoNoHeader = opcoesInternas.incluirBancoNoHeader !== false;
 
-  iniciarOperacaoAssincrona();
+  const tentarComBase = async (baseUrl) => {
+    for (let tentativa = 0; tentativa <= RETRY_BACKOFF_MS.length; tentativa += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TEMPO_MAXIMO_REQUISICAO_MS);
+      try {
+        const resposta = await fetch(`${baseUrl}${caminho}`, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtivo() } : {}),
+            ...(opcoes.headers || {}),
+          },
+          ...opcoes,
+          signal: controller.signal,
+        });
 
-  let resposta;
-  try {
-    resposta = await fetch(`${API_BASE_URL}${caminho}`, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtivo() } : {}),
-        ...(opcoes.headers || {}),
-      },
-      ...opcoes,
-      signal: controller.signal,
-    });
-  } catch (erro) {
-    if (erro.name === "AbortError") {
-      throw new Error("Tempo limite excedido. Tente novamente.");
+        if (!resposta.ok) {
+          const erroTexto = await resposta.text();
+          if (resposta.status >= 400 && resposta.status < 500) {
+            throw new Error(erroTexto || "Falha na requisição.");
+          }
+          if (tentativa < RETRY_BACKOFF_MS.length) {
+            await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[tentativa]));
+            continue;
+          }
+          throw new Error(erroTexto || "Falha na comunicação com o banco de dados.");
+        }
+
+        const texto = await resposta.text();
+        return texto ? JSON.parse(texto) : null;
+      } catch (erro) {
+        const erroRepetivel = erro.name === "AbortError" || erro instanceof TypeError;
+        if (erroRepetivel && tentativa < RETRY_BACKOFF_MS.length) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[tentativa]));
+          continue;
+        }
+        if (erro.name === "AbortError") throw new Error("Tempo limite excedido. Tente novamente.");
+        throw erro;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
-    throw erro;
+    throw new Error("Falha na comunicação com a API.");
+  };
+
+  iniciarOperacaoAssincrona();
+  try {
+    let ultimoErro = null;
+    for (const baseUrl of API_BASE_URLS) {
+      try {
+        return await tentarComBase(baseUrl);
+      } catch (erro) {
+        ultimoErro = erro;
+      }
+    }
+    throw ultimoErro || new Error("Falha na comunicação com a API.");
   } finally {
-    clearTimeout(timeout);
     finalizarOperacaoAssincrona();
   }
-
-  if (!resposta.ok) {
-    const erro = await resposta.text();
-    throw new Error(erro || "Falha na comunicação com o banco de dados.");
-  }
-
-  const texto = await resposta.text();
-  return texto ? JSON.parse(texto) : null;
 }
 
-async function carregarChamadosSalvos() {
-  chamados = await requisicaoApi("/chamados");
+function lerCacheChamados() {
+  try {
+    const bruto = sessionStorage.getItem(CHAVE_CACHE_CHAMADOS);
+    if (!bruto) return null;
+    const cache = JSON.parse(bruto);
+    if (!cache?.timestamp || !Array.isArray(cache?.dados)) return null;
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+function escreverCacheChamados(dados = chamados) {
+  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: obterBancoProjetoAtivo(), dados }));
+}
+
+function invalidarCacheChamados() {
+  sessionStorage.removeItem(CHAVE_CACHE_CHAMADOS);
+}
+
+async function carregarChamadosSalvos(opcoes = {}) {
+  const { usarCache = true, revalidar = true } = opcoes;
+  const cache = usarCache ? lerCacheChamados() : null;
+  const cacheValido = cache && cache.banco === obterBancoProjetoAtivo() && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
+
+  if (cacheValido) {
+    chamados = cache.dados;
+    if (revalidar) {
+      requisicaoApi("/chamados?limit=50&offset=0")
+        .then((dadosAtualizados) => {
+          chamados = dadosAtualizados || [];
+          escreverCacheChamados(chamados);
+          atualizarTelaComChamadosAtualizados();
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  chamados = await requisicaoApi("/chamados?limit=50&offset=0");
+  escreverCacheChamados(chamados);
+}
+
+async function carregarDetalheChamado(idChamado) {
+  if (!idChamado) return null;
+  return requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`);
 }
 
 async function carregarClientesSalvos() {
@@ -277,6 +351,7 @@ async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = tr
   }
 
   if (atualizarTela) atualizarTelaComChamadosAtualizados();
+  invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -293,6 +368,7 @@ async function salvarChamadoIndividual(chamado) {
     method: "PUT",
     body: JSON.stringify(chamado),
   });
+  invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -300,6 +376,7 @@ async function excluirChamadoIndividual(idChamado) {
   await requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`, {
     method: "DELETE",
   });
+  invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -692,6 +769,7 @@ function registrarFormularioCriacao() {
         method: "POST",
         body: JSON.stringify(novoChamado),
       });
+      invalidarCacheChamados();
       notificarAtualizacaoChamados();
     } catch (erro) {
       if (alertaCriacao) {
@@ -759,11 +837,16 @@ function registrarFormularioCadastroCliente() {
   });
 }
 
-function carregarDetalhesChamado() {
+async function carregarDetalhesChamado() {
   const container = document.getElementById("detalhes-chamado");
   if (!container) return;
   const id = new URLSearchParams(window.location.search).get("id") || chamados[0]?.id;
-  const chamado = chamados.find((c) => c.id === id);
+  let chamado = chamados.find((c) => c.id === id);
+  try {
+    chamado = await carregarDetalheChamado(id);
+  } catch {
+    // fallback para o registro já carregado
+  }
   if (!chamado) {
     container.innerHTML = '<div class="alert alert-warning">Chamado não encontrado.</div>';
     return;
@@ -988,7 +1071,7 @@ async function inicializar() {
   if (paginaAdmin) await configurarPainelAdministrador();
   if (paginaDetalhes) {
     atualizarPainelIdentificacao();
-    carregarDetalhesChamado();
+    await carregarDetalhesChamado();
   }
 
   atualizarNomeUsuarioCabecalho();
@@ -998,7 +1081,7 @@ async function inicializar() {
   if (typeof BroadcastChannel !== "undefined") {
     const canalAtualizacao = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
     canalAtualizacao.addEventListener("message", async () => {
-      await carregarChamadosSalvos();
+      await carregarChamadosSalvos({ usarCache: false, revalidar: false });
       atualizarTelaComChamadosAtualizados();
     });
   }
