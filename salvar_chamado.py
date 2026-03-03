@@ -9,13 +9,18 @@ from threading import Lock
 import MySQLdb
 from flask import Flask, jsonify, make_response, request
 
-DB_HOST = "ballast.proxy.rlwy.net"
-DB_USER = "root"
-DB_PASSWORD = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-DB_PORT = 15192
-DB_NAME_DEFAULT = "teste"
-POOL_SIZE = 12
-DB_CACHE_TTL_MINUTOS = 20
+host     = "ballast.proxy.rlwy.net"
+user     = "root"
+password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
+db       = "teste"
+port     =  15192
+nome_banco = "teste"
+
+
+conn = MySQLdb.connect(host, user, password, db, port)
+
+POOL_SIZE = 1
+DB_CACHE_TTL_MINUTOS = 2
 
 app = Flask(__name__)
 
@@ -27,41 +32,27 @@ _pools = {}
 _indices_garantidos = set()
 
 
-def _connect(db_name=None):
-    params = {
-        "host": DB_HOST,
-        "user": DB_USER,
-        "passwd": DB_PASSWORD,
-        "port": DB_PORT,
-        "charset": "utf8mb4",
-        "connect_timeout": 5,
-    }
-    if db_name:
-        params["db"] = db_name
-    try:
-        conn = MySQLdb.connect(**params)
-    except MySQLdb.MySQLError as erro:
-        raise RuntimeError("Falha ao conectar no MySQL. Verifique host, porta, usuário e senha.") from erro
-    conn.autocommit(False)
-    return conn
 
+fila = Queue(maxsize=POOL_SIZE)
+for _ in range(POOL_SIZE):
+    fila.put(conn)
 
-def _criar_pool(nome_banco=None):
-    fila = Queue(maxsize=POOL_SIZE)
-    for _ in range(POOL_SIZE):
-        fila.put(_connect(nome_banco))
-    return fila
 
 
 @contextmanager
 def conexao_pool(nome_banco=None):
     chave = nome_banco or "_sem_banco"
+    print(chave)
+    print("entrada1")
     with _connection_lock:
         if chave not in _pools:
-            _pools[chave] = _criar_pool(nome_banco)
+            _pools[chave] = fila
         pool = _pools[chave]
+        print(_pools)
+        print("entrada2")
 
     try:
+        print("TIMEOUT")
         conn = pool.get(timeout=5)
     except Empty as erro:
         raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
@@ -96,7 +87,7 @@ def _executar_com_retry(nome_banco, operacao):
                 except Exception:
                     pass
                 with _connection_lock:
-                    _pools[chave].put(_connect(nome_banco))
+                    _pools[chave].put(conn)
 
 
 def aplicar_headers_cors(resposta):
@@ -144,7 +135,7 @@ def listar_bancos_disponiveis():
 
 
 def obter_banco_requisicao():
-    nome_banco = request.headers.get("X-Project-DB", DB_NAME_DEFAULT)
+    nome_banco = request.headers.get("X-Project-DB", "teste")
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
     try:
@@ -280,25 +271,8 @@ def inserir_cliente(nome_banco, cliente):
     )
 
 
-def garantir_indices(nome_banco):
-    if nome_banco in _indices_garantidos:
-        return
-
-    def transacao(conn):
-        cursor = conn.cursor()
-        cursor.execute("CREATE INDEX idx_chamados_ultima_id ON chamados (ultima_atualizacao, id_chamado)")
-        cursor.execute("CREATE INDEX idx_chamado_atualizacoes_chamado_data ON chamado_atualizacoes (id_chamado, data_atualizacao)")
-        cursor.close()
-
-    try:
-        executar_transacao(nome_banco, transacao)
-    except MySQLdb.MySQLError:
-        pass
-    _indices_garantidos.add(nome_banco)
-
 
 def listar_chamados(nome_banco, limite=50, offset=0):
-    garantir_indices(nome_banco)
     chamados = executar_select(
         nome_banco,
         """
@@ -512,7 +486,7 @@ def tratar_erro_mysql(erro):
 async def api_projetos_listar():
     try:
         projetos = await executar_em_thread(listar_bancos_disponiveis)
-        return responder_json({"projetos": projetos, "padrao": DB_NAME_DEFAULT})
+        return responder_json({"projetos": projetos, "padrao": "teste"})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
@@ -520,7 +494,7 @@ async def api_projetos_listar():
 @app.route("/api/clientes", methods=["GET"])
 async def api_clientes_listar():
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         clientes = await executar_em_thread(listar_clientes, nome_banco)
         return responder_json(clientes)
     except (ValueError, RuntimeError) as erro:
@@ -530,7 +504,7 @@ async def api_clientes_listar():
 @app.route("/api/clientes", methods=["PUT"])
 async def api_clientes_substituir():
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         clientes = request.json or []
         await executar_em_thread(substituir_clientes, nome_banco, clientes)
         return responder_json({"ok": True})
@@ -541,7 +515,7 @@ async def api_clientes_substituir():
 @app.route("/api/clientes", methods=["POST"])
 async def api_cliente_inserir():
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         await executar_em_thread(inserir_cliente, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
@@ -551,7 +525,7 @@ async def api_cliente_inserir():
 @app.route("/api/chamados", methods=["GET"])
 async def api_chamados_listar():
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
         chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
@@ -563,7 +537,7 @@ async def api_chamados_listar():
 @app.route("/api/chamados/<id_chamado>", methods=["GET"])
 async def api_chamado_detalhar(id_chamado):
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado)
         if not chamado:
             return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
@@ -575,7 +549,7 @@ async def api_chamado_detalhar(id_chamado):
 @app.route("/api/chamados", methods=["PUT"])
 async def api_chamados_substituir():
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
@@ -585,7 +559,7 @@ async def api_chamados_substituir():
 @app.route("/api/chamados", methods=["POST"])
 async def api_chamado_inserir():
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError) as erro:
@@ -595,7 +569,7 @@ async def api_chamado_inserir():
 @app.route("/api/chamados/<id_chamado>", methods=["PUT"])
 async def api_chamado_atualizar(id_chamado):
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         chamado = request.json or {}
         if not chamado.get("id"):
             chamado["id"] = id_chamado
@@ -608,7 +582,7 @@ async def api_chamado_atualizar(id_chamado):
 @app.route("/api/chamados/<id_chamado>", methods=["DELETE"])
 async def api_chamado_remover(id_chamado):
     try:
-        nome_banco = await executar_em_thread(obter_banco_requisicao)
+        nome_banco = "teste"
         await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
@@ -622,7 +596,7 @@ async def api_login():
     senha = (dados.get("senha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or await executar_em_thread(obter_banco_requisicao)
+        nome_banco = dados.get("banco") or "teste"
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
