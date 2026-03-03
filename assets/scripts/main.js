@@ -633,7 +633,7 @@ function registrarFormularioAtualizacao(chamado) {
       alert(erro.message || "Não foi possível excluir o chamado.");
       return;
     }
-    window.location.href = "index.html";
+    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
   });
 }
 
@@ -660,6 +660,22 @@ function registrarFormularioCriacao() {
   const campoLoginCliente = document.getElementById("campo-login-cliente");
   const alertaCriacao = document.getElementById("alerta-criacao");
   const botaoCadastrarCliente = document.getElementById("btn-cadastrar-cliente");
+  const usuarioEhCliente = usuarioAutenticado?.tipo === "Cliente";
+
+  if (usuarioEhCliente) {
+    const clienteAtual = obterClientePorLogin(usuarioAutenticado?.clienteId || "");
+    campoLoginCliente.value = usuarioAutenticado?.clienteId || "";
+    campoLoginCliente.readOnly = true;
+    if (clienteAtual?.nomeCompleto) {
+      campoCliente.value = clienteAtual.nomeCompleto;
+      campoCliente.readOnly = true;
+    }
+    botaoCadastrarCliente?.classList.add("d-none");
+    if (alertaCriacao) {
+      alertaCriacao.className = "alert alert-info";
+      alertaCriacao.textContent = "Você está abrindo chamado para o seu próprio usuário.";
+    }
+  }
 
   function validarClienteExistente() {
     const loginInformado = campoLoginCliente.value.trim().toLowerCase();
@@ -687,8 +703,8 @@ function registrarFormularioCriacao() {
     botaoCadastrarCliente.href = `cadastro-cliente.html?login=${encodeURIComponent(loginInformado)}`;
   }
 
-  campoLoginCliente?.addEventListener("blur", validarClienteExistente);
-  campoLoginCliente?.addEventListener("input", () => {
+  if (!usuarioEhCliente) campoLoginCliente?.addEventListener("blur", validarClienteExistente);
+  if (!usuarioEhCliente) campoLoginCliente?.addEventListener("input", () => {
     botaoCadastrarCliente?.classList.add("d-none");
     if (alertaCriacao) {
       alertaCriacao.className = "alert alert-info";
@@ -713,7 +729,8 @@ function registrarFormularioCriacao() {
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
-    if (usuarioAutenticado?.tipo !== "Técnico") return;
+    const usuarioPodeCriar = ["Técnico", "Administrador", "Cliente"].includes(usuarioAutenticado?.tipo);
+    if (!usuarioPodeCriar) return;
 
     const dataAtual = new Date();
     const dataFormatada = dataAtual.toLocaleString("pt-BR");
@@ -778,7 +795,7 @@ function registrarFormularioCriacao() {
       }
       return;
     }
-    window.location.href = "index.html";
+    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
   });
 }
 
@@ -837,6 +854,13 @@ function registrarFormularioCadastroCliente() {
   });
 }
 
+function usuarioPodeAcessarChamado(chamado) {
+  if (!chamado) return false;
+  if (["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) return true;
+  if (usuarioAutenticado?.tipo !== "Cliente") return false;
+  return (chamado.clienteLogin || "").toLowerCase() === (usuarioAutenticado?.clienteId || "").toLowerCase();
+}
+
 async function carregarDetalhesChamado() {
   const container = document.getElementById("detalhes-chamado");
   if (!container) return;
@@ -849,6 +873,10 @@ async function carregarDetalhesChamado() {
   }
   if (!chamado) {
     container.innerHTML = '<div class="alert alert-warning">Chamado não encontrado.</div>';
+    return;
+  }
+  if (!usuarioPodeAcessarChamado(chamado)) {
+    container.innerHTML = '<div class="alert alert-danger">Você não tem permissão para visualizar este chamado.</div>';
     return;
   }
   preencherCabecalhoChamado(chamado);
@@ -967,7 +995,7 @@ async function configurarPainelAdministrador() {
     item.addEventListener("click", () => {
       definirBancoProjetoAtivo(projeto);
       atual.textContent = projeto;
-      window.location.href = "index.html";
+      window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
     });
     containerLista.appendChild(item);
   });
@@ -1037,7 +1065,7 @@ async function inicializar() {
   }
 
   if (paginaAdmin && usuarioAutenticado?.tipo !== "Administrador") {
-    window.location.href = "index.html";
+    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
 
@@ -1046,7 +1074,12 @@ async function inicializar() {
     return;
   }
 
-  if ((paginaCriacao || paginaCadastroCliente) && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaCriacao && !["Técnico", "Administrador", "Cliente"].includes(usuarioAutenticado?.tipo)) {
+    window.location.href = "cliente.html";
+    return;
+  }
+
+  if (paginaCadastroCliente && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
     window.location.href = "cliente.html";
     return;
   }
@@ -1060,6 +1093,11 @@ async function inicializar() {
   if (paginaCliente) renderChamadosClienteAbertos();
 
   if (paginaCriacao) {
+    const avisoCriacao = document.getElementById("alerta-criacao");
+    if (avisoCriacao && usuarioAutenticado?.tipo === "Cliente") {
+      avisoCriacao.className = "alert alert-info";
+      avisoCriacao.textContent = "Você pode criar chamados para o seu próprio usuário.";
+    }
     const loginClientePredefinido = new URLSearchParams(window.location.search).get("clienteLogin");
     if (loginClientePredefinido) {
       const campoLoginCliente = document.getElementById("campo-login-cliente");
