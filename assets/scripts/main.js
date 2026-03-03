@@ -641,10 +641,12 @@ function gerarNovoIdChamado() {
   if (!chamados || chamados.length === 0) {
     return "C-1";
   }
-  const ultimoChamado = chamados[chamados.length - 1];
-  const correspondencia = (ultimoChamado.id || "").match(/(\d+)/);
-  const ultimoNumero = correspondencia ? parseInt(correspondencia[1], 10) : 0;
-  return `C-${ultimoNumero + 1}`;
+  const maiorIdAtual = chamados.reduce((maior, chamadoAtual) => {
+    const correspondencia = (chamadoAtual.id || "").match(/(\d+)/);
+    const numeroAtual = correspondencia ? parseInt(correspondencia[1], 10) : 0;
+    return Math.max(maior, numeroAtual);
+  }, 0);
+  return `C-${maiorIdAtual + 1}`;
 }
 
 function registrarFormularioCriacao() {
