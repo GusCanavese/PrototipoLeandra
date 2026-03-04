@@ -275,7 +275,7 @@ def listar_chamados(nome_banco, limite=50, offset=0):
     chamados = executar_select(
         nome_banco,
         """
-        SELECT id_chamado, cliente, resumo, prioridade, status, abertura, ultima_atualizacao
+        SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao
         FROM chamados
         ORDER BY ultima_atualizacao DESC, id_chamado DESC
         LIMIT %s OFFSET %s
@@ -286,6 +286,7 @@ def listar_chamados(nome_banco, limite=50, offset=0):
         {
             "id": c["id_chamado"],
             "client": c["cliente"],
+            "clienteLogin": c["login_cliente"],
             "summary": c["resumo"],
             "priority": c["prioridade"],
             "status": c["status"],
@@ -611,7 +612,17 @@ async def api_login():
 
     tipo = autenticado["tipo"]
     redirect = "admin.html" if tipo == "Administrador" else ("index.html" if tipo == "Técnico" else "cliente.html")
-    return responder_json({"ok": True, "usuario": usuario, "tipo": tipo, "redirect": redirect, "banco": nome_banco})
+    cliente_id = autenticado["usuario"] if tipo == "Cliente" else ""
+    return responder_json(
+        {
+            "ok": True,
+            "usuario": usuario,
+            "tipo": tipo,
+            "clienteId": cliente_id,
+            "redirect": redirect,
+            "banco": nome_banco,
+        }
+    )
 
 
 if __name__ == "__main__":

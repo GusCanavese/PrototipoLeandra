@@ -860,7 +860,10 @@ function usuarioPodeAcessarChamado(chamado) {
   if (!chamado) return false;
   if (["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) return true;
   if (usuarioAutenticado?.tipo !== "Cliente") return false;
-  return (chamado.clienteLogin || "").toLowerCase() === (usuarioAutenticado?.clienteId || "").toLowerCase();
+
+  const loginClienteChamado = (chamado.clienteLogin || "").toLowerCase();
+  const identificadorCliente = (usuarioAutenticado?.clienteId || usuarioAutenticado?.usuario || "").toLowerCase();
+  return loginClienteChamado === identificadorCliente;
 }
 
 async function carregarDetalhesChamado() {
