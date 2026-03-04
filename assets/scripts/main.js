@@ -456,8 +456,8 @@ function renderChamadosClienteAbertos() {
   if (!lista) return;
   lista.innerHTML = "";
 
-  const clienteId = (usuarioAutenticado?.clienteId || "").toLowerCase();
-  const chamadosCliente = chamados.filter((c) => (c.clienteLogin || "").toLowerCase() === clienteId);
+  const usuarioCliente = (usuarioAutenticado?.usuario || "").toLowerCase();
+  const chamadosCliente = chamados.filter((c) => (c.clienteLogin || "").toLowerCase() === usuarioCliente);
   if (!chamadosCliente.length) {
     lista.innerHTML = '<div class="alert alert-info mb-0">Nenhum chamado encontrado.</div>';
     return;
