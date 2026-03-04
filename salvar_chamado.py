@@ -29,7 +29,6 @@ bancos_cache = {"valores": [], "expira_em": datetime.min}
 
 _connection_lock = Lock()
 _pools = {}
-_indices_garantidos = set()
 
 
 
@@ -123,7 +122,7 @@ def listar_bancos_disponiveis():
     if datetime.now() < bancos_cache["expira_em"] and bancos_cache["valores"]:
         return bancos_cache["valores"]
 
-    with conexao_pool() as conn:
+    with conexao_pool(nome_banco) as conn:
         cursor = conn.cursor()
         cursor.execute("SHOW DATABASES")
         bancos = [linha[0] for linha in cursor.fetchall() if linha[0] not in SISTEMA_DATABASES]
