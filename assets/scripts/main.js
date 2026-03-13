@@ -755,7 +755,7 @@ function registrarFormularioCriacao() {
       : [];
 
     const novoChamado = {
-      id: gerarNovoIdChamado(),
+      id: "",
       client: document.getElementById("campo-cliente").value.trim(),
       clienteLogin: document.getElementById("campo-login-cliente").value.trim(),
       summary: document.getElementById("campo-resumo").value.trim(),
@@ -795,10 +795,11 @@ function registrarFormularioCriacao() {
 
     chamados.unshift(novoChamado);
     try {
-      await requisicaoApi("/chamados", {
+      const respostaCriacao = await requisicaoApi("/chamados", {
         method: "POST",
         body: JSON.stringify(novoChamado),
       });
+      if (respostaCriacao?.chamado?.id) novoChamado.id = respostaCriacao.chamado.id;
       invalidarCacheChamados();
       notificarAtualizacaoChamados();
     } catch (erro) {

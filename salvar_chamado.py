@@ -416,8 +416,32 @@ def substituir_chamados(nome_banco, chamados):
 
 
 def salvar_chamado_individual(nome_banco, chamado):
+    chamado_normalizado = dict(chamado or {})
+
     def transacao(conn):
         cursor = conn.cursor()
+
+        id_chamado = (chamado_normalizado.get("id") or "").strip()
+        if not id_chamado:
+            cursor.execute(
+                """
+                SELECT id_chamado
+                FROM chamados
+                WHERE id_chamado REGEXP '^C-[0-9]+$'
+                ORDER BY CAST(SUBSTRING(id_chamado, 3) AS UNSIGNED) DESC
+                LIMIT 1
+                """
+            )
+            ultimo = cursor.fetchone()
+            proximo_numero = 1
+            if ultimo and ultimo[0]:
+                try:
+                    proximo_numero = int(str(ultimo[0]).split("-")[-1]) + 1
+                except (ValueError, TypeError):
+                    proximo_numero = 1
+            id_chamado = f"C-{proximo_numero}"
+            chamado_normalizado["id"] = id_chamado
+
         cursor.execute(
             """
             INSERT INTO chamados (
@@ -439,19 +463,19 @@ def salvar_chamado_individual(nome_banco, chamado):
                 ultima_atualizacao = VALUES(ultima_atualizacao)
             """,
             (
-                chamado["id"],
-                chamado["client"],
-                chamado["clienteLogin"],
-                chamado["summary"],
-                chamado["description"],
-                chamado["priority"],
-                chamado["status"],
-                chamado["processNumber"],
-                1 if chamado.get("hasPartnership") else 0,
-                chamado.get("partnershipPercent", ""),
-                chamado.get("partnershipWith", ""),
-                chamado["openedAt"],
-                chamado["lastUpdate"],
+                chamado_normalizado["id"],
+                chamado_normalizado["client"],
+                chamado_normalizado["clienteLogin"],
+                chamado_normalizado["summary"],
+                chamado_normalizado["description"],
+                chamado_normalizado["priority"],
+                chamado_normalizado["status"],
+                chamado_normalizado["processNumber"],
+                1 if chamado_normalizado.get("hasPartnership") else 0,
+                chamado_normalizado.get("partnershipPercent", ""),
+                chamado_normalizado.get("partnershipWith", ""),
+                chamado_normalizado["openedAt"],
+                chamado_normalizado["lastUpdate"],
             ),
         )
 
@@ -461,7 +485,7 @@ def salvar_chamado_individual(nome_banco, chamado):
             FROM chamado_atualizacoes
             WHERE id_chamado = %s
             """,
-            (chamado["id"],),
+            (chamado_normalizado["id"],),
         )
         existentes = {
             (
@@ -473,7 +497,7 @@ def salvar_chamado_individual(nome_banco, chamado):
             for row in cursor.fetchall()
         }
 
-        for atualizacao in chamado.get("updates", []):
+        for atualizacao in chamado_normalizado.get("updates", []):
             anexos_serializados = json.dumps(atualizacao.get("attachments", []), ensure_ascii=False)
             assinatura = (
                 atualizacao.get("author", "Técnico") or "",
@@ -489,7 +513,7 @@ def salvar_chamado_individual(nome_banco, chamado):
                 VALUES (%s, %s, %s, %s, %s)
                 """,
                 (
-                    chamado["id"],
+                    chamado_normalizado["id"],
                     assinatura[0],
                     assinatura[1],
                     assinatura[2],
@@ -500,6 +524,7 @@ def salvar_chamado_individual(nome_banco, chamado):
         cursor.close()
 
     executar_transacao(nome_banco, transacao)
+    return chamado_normalizado
 
 
 def excluir_chamado(nome_banco, id_chamado):
@@ -601,8 +626,8 @@ async def api_chamados_substituir():
 async def api_chamado_inserir():
     try:
         nome_banco = "teste"
-        await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
-        return responder_json({"ok": True}, 201)
+        chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
+        return responder_json({"ok": True, "chamado": chamado_salvo}, 201)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
