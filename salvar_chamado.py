@@ -17,9 +17,7 @@ port     =  15192
 nome_banco = "teste"
 
 
-conn = MySQLdb.connect(host, user, password, db, port)
-
-POOL_SIZE = 1
+POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
 
 app = Flask(__name__)
@@ -32,29 +30,42 @@ _pools = {}
 
 
 
-fila = Queue(maxsize=POOL_SIZE)
-for _ in range(POOL_SIZE):
-    fila.put(conn)
+def criar_conexao(nome_banco=None):
+    banco_destino = nome_banco or db
+    return MySQLdb.connect(host=host, user=user, passwd=password, db=banco_destino, port=port, charset="utf8mb4")
+
+
+def obter_pool(nome_banco=None):
+    chave = nome_banco or db
+    with _connection_lock:
+        dados_pool = _pools.get(chave)
+        if dados_pool is None:
+            dados_pool = {"fila": Queue(maxsize=POOL_SIZE), "criadas": 0}
+            _pools[chave] = dados_pool
+    return dados_pool
 
 
 
 @contextmanager
 def conexao_pool(nome_banco=None):
-    chave = nome_banco or "_sem_banco"
-    print(chave)
-    print("entrada1")
-    with _connection_lock:
-        if chave not in _pools:
-            _pools[chave] = fila
-        pool = _pools[chave]
-        print(_pools)
-        print("entrada2")
+    chave = nome_banco or db
+    dados_pool = obter_pool(chave)
+    pool = dados_pool["fila"]
+    conn = None
 
     try:
-        print("TIMEOUT")
-        conn = pool.get(timeout=5)
-    except Empty as erro:
-        raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
+        conn = pool.get_nowait()
+    except Empty:
+        with _connection_lock:
+            if dados_pool["criadas"] < POOL_SIZE:
+                conn = criar_conexao(chave)
+                dados_pool["criadas"] += 1
+
+        if conn is None:
+            try:
+                conn = pool.get(timeout=5)
+            except Empty as erro:
+                raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
 
     try:
         yield conn
@@ -66,10 +77,12 @@ def conexao_pool(nome_banco=None):
                 conn.close()
             except Exception:
                 pass
+            with _connection_lock:
+                dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
 
 
 def _executar_com_retry(nome_banco, operacao):
-    chave = nome_banco or "_sem_banco"
+    chave = nome_banco or db
     for tentativa in range(2):
         with conexao_pool(nome_banco) as conn:
             try:
@@ -86,7 +99,9 @@ def _executar_com_retry(nome_banco, operacao):
                 except Exception:
                     pass
                 with _connection_lock:
-                    _pools[chave].put(conn)
+                    dados_pool = _pools.get(chave)
+                    if dados_pool:
+                        dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
 
 
 def aplicar_headers_cors(resposta):
@@ -122,7 +137,7 @@ def listar_bancos_disponiveis():
     if datetime.now() < bancos_cache["expira_em"] and bancos_cache["valores"]:
         return bancos_cache["valores"]
 
-    with conexao_pool(nome_banco) as conn:
+    with conexao_pool(db) as conn:
         cursor = conn.cursor()
         cursor.execute("SHOW DATABASES")
         bancos = [linha[0] for linha in cursor.fetchall() if linha[0] not in SISTEMA_DATABASES]
@@ -440,8 +455,34 @@ def salvar_chamado_individual(nome_banco, chamado):
             ),
         )
 
-        cursor.execute("DELETE FROM chamado_atualizacoes WHERE id_chamado = %s", (chamado["id"],))
+        cursor.execute(
+            """
+            SELECT autor, mensagem, data_atualizacao, anexos
+            FROM chamado_atualizacoes
+            WHERE id_chamado = %s
+            """,
+            (chamado["id"],),
+        )
+        existentes = {
+            (
+                row[0] or "",
+                row[1] or "",
+                row[2] or "",
+                row[3] or "[]",
+            )
+            for row in cursor.fetchall()
+        }
+
         for atualizacao in chamado.get("updates", []):
+            anexos_serializados = json.dumps(atualizacao.get("attachments", []), ensure_ascii=False)
+            assinatura = (
+                atualizacao.get("author", "Técnico") or "",
+                atualizacao.get("message", "") or "",
+                atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")) or "",
+                anexos_serializados,
+            )
+            if assinatura in existentes:
+                continue
             cursor.execute(
                 """
                 INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
@@ -449,10 +490,10 @@ def salvar_chamado_individual(nome_banco, chamado):
                 """,
                 (
                     chamado["id"],
-                    atualizacao.get("author", "Técnico"),
-                    atualizacao.get("message", ""),
-                    atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")),
-                    json.dumps(atualizacao.get("attachments", []), ensure_ascii=False),
+                    assinatura[0],
+                    assinatura[1],
+                    assinatura[2],
+                    assinatura[3],
                 ),
             )
 
@@ -468,7 +509,7 @@ def excluir_chamado(nome_banco, id_chamado):
 def autenticar_usuario(nome_banco, usuario, senha):
     registro = executar_select(
         nome_banco,
-        "SELECT usuario, senha, tipo FROM usuarios WHERE usuario = %s",
+        "SELECT usuario, senha, tipo FROM usuarios WHERE usuario = %s LIMIT 1",
         (usuario,),
         fetch_one=True,
     )
@@ -600,13 +641,13 @@ async def api_login():
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
-        bancos_disponiveis = await executar_em_thread(listar_bancos_disponiveis)
-        if nome_banco not in bancos_disponiveis:
-            raise ValueError(f"Banco '{nome_banco}' não encontrado.")
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
-    autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
+    try:
+        autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
+    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
+        return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
     if not autenticado:
         return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 

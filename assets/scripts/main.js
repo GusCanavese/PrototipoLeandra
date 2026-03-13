@@ -68,14 +68,14 @@ const CLIENTES_INICIAIS = [
 ];
 
 const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
-const API_BASE_URLS = Array.from(new Set([API_BASE_URL, "http://localhost:5000/api"]));
+const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
 const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
-const TEMPO_MAXIMO_REQUISICAO_MS = 18000;
-const RETRY_BACKOFF_MS = [300, 800, 1500];
+const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
+const RETRY_BACKOFF_MS = [350, 900];
 
 let chamados = [];
 let usuarioAutenticado = null;
@@ -94,6 +94,7 @@ const credenciaisLogin = {
 
 let clientes = [];
 let operacoesPendentes = 0;
+let promessaCarregamentoChamados = null;
 
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
@@ -257,6 +258,9 @@ function invalidarCacheChamados() {
 }
 
 async function carregarChamadosSalvos(opcoes = {}) {
+  if (promessaCarregamentoChamados) return promessaCarregamentoChamados;
+
+  promessaCarregamentoChamados = (async () => {
   const { usarCache = true, revalidar = true } = opcoes;
   const cache = usarCache ? lerCacheChamados() : null;
   const cacheValido = cache && cache.banco === obterBancoProjetoAtivo() && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
@@ -277,6 +281,13 @@ async function carregarChamadosSalvos(opcoes = {}) {
 
   chamados = await requisicaoApi("/chamados?limit=50&offset=0");
   escreverCacheChamados(chamados);
+  })();
+
+  try {
+    await promessaCarregamentoChamados;
+  } finally {
+    promessaCarregamentoChamados = null;
+  }
 }
 
 async function carregarDetalheChamado(idChamado) {
