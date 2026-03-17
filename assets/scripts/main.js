@@ -5,7 +5,7 @@ const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
 const DATABASE = "teste"
-const CACHE_CHAMADOS_TTL_MS = 1 * 60 * 1;
+const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
 const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
@@ -159,43 +159,46 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
 function lerCacheChamados() {
   try {
     const bruto = sessionStorage.getItem(CHAVE_CACHE_CHAMADOS);
+    console.log("Cache bruto lido: ", bruto)
     if (!bruto) return null;
     const cache = JSON.parse(bruto);
     if (!cache?.timestamp || !Array.isArray(cache?.dados)) return null;
-    return cache;
+    return cache.dados;
   } catch {
     return null;
   }
 }
 
+console.log("chamados-> ", chamados)
+
 function escreverCacheChamados(dados = chamados) {
+console.log("chamados-> ", chamados)
+
   sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: DATABASE, dados }));
 }
 
-function invalidarCacheChamados() {
-  sessionStorage.removeItem(CHAVE_CACHE_CHAMADOS);
-}
+// function invalidarCacheChamados() {
+//   sessionStorage.removeItem(CHAVE_CACHE_CHAMADOS);
+// }
 
 async function carregarChamadosSalvos(opcoes = {}) {
   promessaCarregamentoChamados = (async () => {
   const { usarCache = true, revalidar = true } = opcoes;
   const cache = usarCache ? lerCacheChamados() : null;
-  console.log("cache -> ",cache)
   console.log("chacheSendoLido -> ",lerCacheChamados())
   const cacheValido = cache && cache.banco === DATABASE && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
   console.log("cache válido? -> ", cacheValido)
 
-
   if (cacheValido) {
     chamados = cache.dados;
+    console.log("chamados do cache: ", chamados);
     if (revalidar) {
-      requisicaoApi("/chamados?limit=50&offset=0")
-        .then((dadosAtualizados) => {
+      requisicaoApi("/chamados?limit=5&offset=0").then((dadosAtualizados) => {
           chamados = dadosAtualizados || [];
+          console.log("chamados pós revalidação: ", chamados);
           escreverCacheChamados(chamados);
           atualizarTelaComChamadosAtualizados();
-        })
-        .catch(() => {});
+        }).catch(() => {});
     }
     return;
   }
@@ -283,7 +286,7 @@ async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = tr
   }
 
   if (atualizarTela) atualizarTelaComChamadosAtualizados();
-  invalidarCacheChamados();
+  // invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -300,7 +303,7 @@ async function salvarChamadoIndividual(chamado) {
     method: "PUT",
     body: JSON.stringify(chamado),
   });
-  invalidarCacheChamados();
+  // invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -308,7 +311,7 @@ async function excluirChamadoIndividual(idChamado) {
   await requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`, {
     method: "DELETE",
   });
-  invalidarCacheChamados();
+  // invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -713,7 +716,7 @@ function registrarFormularioCriacao() {
         body: JSON.stringify(novoChamado),
       });
       if (respostaCriacao?.chamado?.id) novoChamado.id = respostaCriacao.chamado.id;
-      invalidarCacheChamados();
+      // invalidarCacheChamados();
       notificarAtualizacaoChamados();
     } catch (erro) {
       if (alertaCriacao) {
