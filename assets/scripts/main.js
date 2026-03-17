@@ -1,111 +1,30 @@
-// const CHAMADOS_INICIAIS = [
-//   {
-//     id: "C-1",
-//     client: "Clínica Horizonte",
-//     summary: "Falha no acesso ao prontuário eletrônico",
-//     description: "Usuários não conseguem salvar novos pacientes no sistema.",
-//     lastUpdate: "10/06/2024 14:35",
-//     openedAt: "08/06/2024",
-//     priority: "Alta",
-//     status: "Em andamento",
-//     clienteLogin: "cliente",
-//     processNumber: "0001234-12.2024.8.26.0001",
-//     hasPartnership: true,
-//     partnershipPercent: "30",
-//     partnershipWith: "Escritório Lima",
-//     updates: [],
-//   },
-//   {
-//     id: "C-2",
-//     client: "Empresa Sol Nascente",
-//     summary: "Erro ao anexar comprovante no portal",
-//     description: "O upload finaliza, mas o arquivo não fica visível no histórico.",
-//     lastUpdate: "11/06/2024 09:20",
-//     openedAt: "11/06/2024",
-//     priority: "Média",
-//     status: "Aberto",
-//     clienteLogin: "cliente",
-//     processNumber: "0001250-22.2024.8.26.0001",
-//     hasPartnership: false,
-//     partnershipPercent: "",
-//     partnershipWith: "",
-//     updates: [
-//       {
-//         author: "Cliente",
-//         message: "Anexo enviado para validação.",
-//         date: "11/06/2024 09:20",
-//         attachments: ["comprovante.pdf"],
-//       },
-//     ],
-//   },
-//   {
-//     id: "C-3",
-//     client: "Loja Aurora",
-//     summary: "Consulta de andamento do processo",
-//     description: "Solicitação de retorno sobre prazo da audiência.",
-//     lastUpdate: "11/06/2024 10:05",
-//     openedAt: "11/06/2024",
-//     priority: "Baixa",
-//     status: "Aberto",
-//     clienteLogin: "cliente",
-//     processNumber: "Sem processo",
-//     hasPartnership: false,
-//     partnershipPercent: "",
-//     partnershipWith: "",
-//     updates: [],
-//   },
-// ];
-
-const CLIENTES_INICIAIS = [
-  {
-    nomeCompleto: "Cliente Padrão",
-    telefone: "(11) 99999-9999",
-    email: "cliente@padrao.com",
-    documento: "000.000.000-00",
-    login: "cliente",
-    senha: "cliente123",
-  },
-];
-
 const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
 const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
-const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
+const DATABASE = "teste"
+const CACHE_CHAMADOS_TTL_MS = 1 * 60 * 1;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
+const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
+const credenciaisLogin = {tecnico: { senha: "tecnico123", tipo: "Técnico", redirect: "index.html" },};
 
 let chamados = [];
-let usuarioAutenticado = null;
-const filtros = {
-  client: "",
-  summary: "",
-  lastUpdate: "",
-  openedAt: "",
-  priority: "",
-  status: "",
-};
-
-const credenciaisLogin = {
-  tecnico: { senha: "tecnico123", tipo: "Técnico", redirect: "index.html" },
-};
-
 let clientes = [];
-let operacoesPendentes = 0;
+let usuarioAutenticado = null;
 let promessaCarregamentoChamados = null;
-
+let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
-function obterBancoProjetoAtivo() {
-  return bancoProjetoAtivo || "teste";
-}
 
 function definirBancoProjetoAtivo(nomeBanco) {
   bancoProjetoAtivo = (nomeBanco || "teste").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
 }
+
+
 
 function alternarLoadingProcessamento(ativo) {
   const overlay = document.getElementById("overlay-loading-global");
@@ -185,7 +104,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
         const resposta = await fetch(`${baseUrl}${caminho}`, {
           headers: {
             "Content-Type": "application/json",
-            ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtivo() } : {}),
+            ...(incluirBancoNoHeader ? { "X-Project-DB": DATABASE } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
@@ -250,7 +169,7 @@ function lerCacheChamados() {
 }
 
 function escreverCacheChamados(dados = chamados) {
-  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: obterBancoProjetoAtivo(), dados }));
+  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: DATABASE, dados }));
 }
 
 function invalidarCacheChamados() {
@@ -258,12 +177,14 @@ function invalidarCacheChamados() {
 }
 
 async function carregarChamadosSalvos(opcoes = {}) {
-  if (promessaCarregamentoChamados) return promessaCarregamentoChamados;
-
   promessaCarregamentoChamados = (async () => {
   const { usarCache = true, revalidar = true } = opcoes;
   const cache = usarCache ? lerCacheChamados() : null;
-  const cacheValido = cache && cache.banco === obterBancoProjetoAtivo() && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
+  console.log("cache -> ",cache)
+  console.log("chacheSendoLido -> ",lerCacheChamados())
+  const cacheValido = cache && cache.banco === DATABASE && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
+  console.log("cache válido? -> ", cacheValido)
+
 
   if (cacheValido) {
     chamados = cache.dados;
@@ -279,7 +200,7 @@ async function carregarChamadosSalvos(opcoes = {}) {
     return;
   }
 
-  chamados = await requisicaoApi("/chamados?limit=50&offset=0");
+  chamados = await requisicaoApi("/chamados?limit=5&offset=0");
   escreverCacheChamados(chamados);
   })();
 
@@ -426,27 +347,19 @@ function createPriorityBadge(priority) {
 
 function renderChamadosTabela() {
   const corpoTabela = document.getElementById("lista-chamados");
+  console.log(corpoTabela)
   if (!corpoTabela) return;
   corpoTabela.innerHTML = "";
 
-  chamados
-    .filter((chamado) => {
+  chamados.filter((chamado) => {
       const atendeCliente = chamado.client.toLowerCase().includes(filtros.client);
       const atendeResumo = chamado.summary.toLowerCase().includes(filtros.summary);
       const atendeUltima = chamado.lastUpdate.toLowerCase().includes(filtros.lastUpdate);
       const atendeAbertura = chamado.openedAt.toLowerCase().includes(filtros.openedAt);
       const atendeStatus = chamado.status.toLowerCase().includes(filtros.status);
       const atendePrioridade = !filtros.priority || chamado.priority === filtros.priority;
-      return (
-        atendeCliente &&
-        atendeResumo &&
-        atendeUltima &&
-        atendeAbertura &&
-        atendeStatus &&
-        atendePrioridade
-      );
-    })
-    .forEach((chamado) => {
+      return (atendeCliente && atendeResumo && atendeUltima && atendeAbertura && atendeStatus && atendePrioridade);
+    }).forEach((chamado) => {
       const linha = document.createElement("tr");
       linha.innerHTML = `
         <td><div class="fw-semibold">${chamado.client}</div><div class="text-muted small">${chamado.id}</div></td>
@@ -957,7 +870,7 @@ async function configurarTelaLogin() {
       seletorProjeto.innerHTML = (dadosProjetos.projetos || [])
         .map((projeto) => `<option value="${projeto}">${projeto}</option>`)
         .join("");
-      seletorProjeto.value = obterBancoProjetoAtivo();
+      seletorProjeto.value = DATABASE;
       seletorProjeto.addEventListener("change", () => definirBancoProjetoAtivo(seletorProjeto.value));
     }
   } catch {
@@ -974,7 +887,7 @@ async function configurarTelaLogin() {
     try {
       const autenticacao = await requisicaoApi("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario, senha, banco: obterBancoProjetoAtivo() }),
+        body: JSON.stringify({ usuario, senha, banco: DATABASE}),
       });
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
@@ -1000,7 +913,7 @@ async function configurarPainelAdministrador() {
   const atual = document.getElementById("banco-atual-admin");
   if (!containerLista || !atual) return;
 
-  atual.textContent = obterBancoProjetoAtivo();
+  atual.textContent = DATABASE;
   const dados = await carregarProjetosDisponiveis();
   const projetos = dados.projetos || [];
 
@@ -1071,7 +984,7 @@ async function inicializar() {
     try {
       await Promise.all([carregarChamadosSalvos(), carregarClientesSalvos()]);
     } catch {
-      alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtivo()}'. Verifique o backend Python.`);
+      alert(`Não foi possível carregar dados do banco '${DATABASE}'. Verifique o backend Python.`);
       return;
     }
   }
