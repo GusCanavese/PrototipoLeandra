@@ -19,15 +19,16 @@ nome_banco = "teste"
 
 POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
+SCHEMA_CACHE_TTL_MINUTOS = 5
 
 app = Flask(__name__)
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
+esquema_cache = {}
 
 _connection_lock = Lock()
 _pools = {}
-
 
 
 def criar_conexao(nome_banco=None):
@@ -43,7 +44,6 @@ def obter_pool(nome_banco=None):
             dados_pool = {"fila": Queue(maxsize=POOL_SIZE), "criadas": 0}
             _pools[chave] = dados_pool
     return dados_pool
-
 
 
 @contextmanager
@@ -223,25 +223,102 @@ def executar_transacao(nome_banco, callback):
     _executar_com_retry(nome_banco, operacao)
 
 
-def listar_clientes(nome_banco):
-    registros = executar_select(
+def obter_colunas_tabela(nome_banco, tabela):
+    chave_cache = (nome_banco or db, tabela)
+    cache = esquema_cache.get(chave_cache)
+    if cache and cache["expira_em"] > datetime.now():
+        return cache["colunas"]
+
+    colunas = executar_select(
         nome_banco,
         """
-        SELECT usuario, senha, nome_completo, telefone, documento
+        SELECT COLUMN_NAME
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+        """,
+        (nome_banco or db, tabela),
+        dict_cursor=False,
+    )
+    valores = {linha[0] for linha in colunas}
+    esquema_cache[chave_cache] = {
+        "colunas": valores,
+        "expira_em": datetime.now() + timedelta(minutes=SCHEMA_CACHE_TTL_MINUTOS),
+    }
+    return valores
+
+
+def tabela_existe(nome_banco, tabela):
+    return bool(obter_colunas_tabela(nome_banco, tabela))
+
+
+def coluna_ou_padrao(colunas, coluna, alias=None, padrao="''", prefixo=""):
+    alias_sql = alias or coluna
+    if coluna in colunas:
+        return f"{prefixo}{coluna} AS {alias_sql}"
+    return f"{padrao} AS {alias_sql}"
+
+
+def expressao_ultima_atualizacao(nome_banco, alias_chamados="c"):
+    colunas_chamados = obter_colunas_tabela(nome_banco, "chamados")
+    possui_tabela_atualizacoes = tabela_existe(nome_banco, "chamado_atualizacoes")
+
+    if "ultima_atualizacao" in colunas_chamados and possui_tabela_atualizacoes:
+        return (
+            f"COALESCE({alias_chamados}.ultima_atualizacao, atual.data_atualizacao, '')"
+        )
+    if "ultima_atualizacao" in colunas_chamados:
+        return f"COALESCE({alias_chamados}.ultima_atualizacao, '')"
+    if possui_tabela_atualizacoes:
+        return "COALESCE(atual.data_atualizacao, '')"
+    return "''"
+
+
+def join_ultima_atualizacao(nome_banco, alias_chamados="c"):
+    if not tabela_existe(nome_banco, "chamado_atualizacoes"):
+        return ""
+    return f"""
+        LEFT JOIN (
+            SELECT ca.id_chamado, ca.data_atualizacao
+            FROM chamado_atualizacoes ca
+            INNER JOIN (
+                SELECT id_chamado, MAX(id) AS max_id
+                FROM chamado_atualizacoes
+                GROUP BY id_chamado
+            ) ult ON ult.id_chamado = ca.id_chamado AND ult.max_id = ca.id
+        ) atual ON atual.id_chamado = {alias_chamados}.id_chamado
+    """
+
+
+def listar_clientes(nome_banco):
+    colunas = obter_colunas_tabela(nome_banco, "usuarios")
+    if not colunas:
+        return []
+
+    registros = executar_select(
+        nome_banco,
+        f"""
+        SELECT
+            {coluna_ou_padrao(colunas, 'usuario')},
+            {coluna_ou_padrao(colunas, 'senha')},
+            {coluna_ou_padrao(colunas, 'nome_completo')},
+            {coluna_ou_padrao(colunas, 'telefone')},
+            {coluna_ou_padrao(colunas, 'documento')}
         FROM usuarios
-        WHERE tipo = 'Cliente'
+        WHERE {'tipo = %s' if 'tipo' in colunas else '1=1'}
         ORDER BY usuario
         """,
+        ('Cliente',) if 'tipo' in colunas else (),
     )
     return [
         {
             "nomeCompleto": r["nome_completo"] or "",
             "telefone": r["telefone"] or "",
             "documento": r["documento"] or "",
-            "login": r["usuario"],
-            "senha": r["senha"],
+            "login": r["usuario"] or "",
+            "senha": r["senha"] or "",
         }
         for r in registros
+        if r["usuario"]
     ]
 
 
@@ -287,11 +364,24 @@ def inserir_cliente(nome_banco, cliente):
 
 
 def listar_chamados(nome_banco, limite=50, offset=0):
+    colunas = obter_colunas_tabela(nome_banco, "chamados")
+    if not colunas:
+        return []
+
     chamados = executar_select(
         nome_banco,
-        """
-        SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao
-        FROM chamados
+        f"""
+        SELECT
+            {coluna_ou_padrao(colunas, 'id_chamado', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'cliente', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'login_cliente', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'resumo', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'prioridade', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'status', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'abertura', prefixo='c.')},
+            {expressao_ultima_atualizacao(nome_banco)} AS ultima_atualizacao
+        FROM chamados c
+        {join_ultima_atualizacao(nome_banco)}
         ORDER BY ultima_atualizacao DESC, id_chamado DESC
         LIMIT %s OFFSET %s
         """,
@@ -312,14 +402,67 @@ def listar_chamados(nome_banco, limite=50, offset=0):
     ]
 
 
+def verificar_datas_atualizacao_chamados(nome_banco, referencias):
+    colunas = obter_colunas_tabela(nome_banco, "chamados")
+    if not colunas or not referencias:
+        return {}
+
+    ids = [str(item.get("id") or "").strip() for item in referencias if (item.get("id") or "").strip()]
+    if not ids:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(ids))
+    registros = executar_select(
+        nome_banco,
+        f"""
+        SELECT c.id_chamado, {expressao_ultima_atualizacao(nome_banco)} AS ultima_atualizacao
+        FROM chamados c
+        {join_ultima_atualizacao(nome_banco)}
+        WHERE c.id_chamado IN ({placeholders})
+        """,
+        tuple(ids),
+    )
+    por_id = {registro["id_chamado"]: (registro["ultima_atualizacao"] or "") for registro in registros}
+
+    resultado = {}
+    for item in referencias:
+        id_chamado = str(item.get("id") or "").strip()
+        data_cache = str(item.get("lastUpdate") or "")
+        data_banco = por_id.get(id_chamado)
+        resultado[id_chamado] = {
+            "exists": data_banco is not None,
+            "cachedExactDateExists": data_banco == data_cache if data_banco is not None else False,
+            "dbLastUpdate": data_banco or "",
+            "needsRefresh": data_banco is None or data_banco != data_cache,
+        }
+    return resultado
+
+
 def obter_chamado_detalhe(nome_banco, id_chamado):
+    colunas = obter_colunas_tabela(nome_banco, "chamados")
+    if not colunas:
+        return None
+
     chamado = executar_select(
         nome_banco,
-        """
-        SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-        FROM chamados
-        WHERE id_chamado = %s
+        f"""
+        SELECT
+            {coluna_ou_padrao(colunas, 'id_chamado', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'cliente', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'login_cliente', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'resumo', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'descricao', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'prioridade', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'status', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'numero_processo', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'parceria', padrao='0', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'parceria_porcentagem', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'parceria_com', prefixo='c.')},
+            {coluna_ou_padrao(colunas, 'abertura', prefixo='c.')},
+            {expressao_ultima_atualizacao(nome_banco)} AS ultima_atualizacao
+        FROM chamados c
+        {join_ultima_atualizacao(nome_banco)}
+        WHERE c.id_chamado = %s
         """,
         (id_chamado,),
         fetch_one=True,
@@ -327,16 +470,18 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
     if not chamado:
         return None
 
-    atualizacoes = executar_select(
-        nome_banco,
-        """
-        SELECT autor, mensagem, data_atualizacao, anexos
-        FROM chamado_atualizacoes
-        WHERE id_chamado = %s
-        ORDER BY id DESC
-        """,
-        (id_chamado,),
-    )
+    atualizacoes = []
+    if tabela_existe(nome_banco, "chamado_atualizacoes"):
+        atualizacoes = executar_select(
+            nome_banco,
+            """
+            SELECT autor, mensagem, data_atualizacao, anexos
+            FROM chamado_atualizacoes
+            WHERE id_chamado = %s
+            ORDER BY id DESC
+            """,
+            (id_chamado,),
+        )
 
     return {
         "id": chamado["id_chamado"],
@@ -363,6 +508,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
         ],
     }
 
+# keep rest of file from original after this marker
 
 def substituir_chamados(nome_banco, chamados):
     def transacao(conn):
@@ -560,7 +706,7 @@ async def api_projetos_listar():
 @app.route("/api/clientes", methods=["GET"])
 async def api_clientes_listar():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         clientes = await executar_em_thread(listar_clientes, nome_banco)
         return responder_json(clientes)
     except (ValueError, RuntimeError) as erro:
@@ -570,7 +716,7 @@ async def api_clientes_listar():
 @app.route("/api/clientes", methods=["PUT"])
 async def api_clientes_substituir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         clientes = request.json or []
         await executar_em_thread(substituir_clientes, nome_banco, clientes)
         return responder_json({"ok": True})
@@ -581,7 +727,7 @@ async def api_clientes_substituir():
 @app.route("/api/clientes", methods=["POST"])
 async def api_cliente_inserir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         await executar_em_thread(inserir_cliente, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
@@ -591,7 +737,7 @@ async def api_cliente_inserir():
 @app.route("/api/chamados", methods=["GET"])
 async def api_chamados_listar():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
         chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
@@ -599,11 +745,21 @@ async def api_chamados_listar():
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+@app.route("/api/chamados/validar-cache", methods=["POST"])
+async def api_chamados_validar_cache():
+    try:
+        nome_banco = obter_banco_requisicao()
+        chamados_referencia = (request.json or {}).get("chamados") or []
+        validacoes = await executar_em_thread(verificar_datas_atualizacao_chamados, nome_banco, chamados_referencia)
+        return responder_json({"ok": True, "validacoes": validacoes})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
 
 @app.route("/api/chamados/<id_chamado>", methods=["GET"])
 async def api_chamado_detalhar(id_chamado):
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado)
         if not chamado:
             return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
@@ -615,7 +771,7 @@ async def api_chamado_detalhar(id_chamado):
 @app.route("/api/chamados", methods=["PUT"])
 async def api_chamados_substituir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
@@ -625,7 +781,7 @@ async def api_chamados_substituir():
 @app.route("/api/chamados", methods=["POST"])
 async def api_chamado_inserir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
         return responder_json({"ok": True, "chamado": chamado_salvo}, 201)
     except (ValueError, RuntimeError) as erro:
@@ -635,7 +791,7 @@ async def api_chamado_inserir():
 @app.route("/api/chamados/<id_chamado>", methods=["PUT"])
 async def api_chamado_atualizar(id_chamado):
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         chamado = request.json or {}
         if not chamado.get("id"):
             chamado["id"] = id_chamado
@@ -648,7 +804,7 @@ async def api_chamado_atualizar(id_chamado):
 @app.route("/api/chamados/<id_chamado>", methods=["DELETE"])
 async def api_chamado_remover(id_chamado):
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:

@@ -5,7 +5,6 @@ const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
 const CHAVE_CACHE_CLIENTES = "cacheClientes";
-const DATABASE = "teste"
 const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
@@ -105,7 +104,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
         const resposta = await fetch(`${baseUrl}${caminho}`, {
           headers: {
             "Content-Type": "application/json",
-            ...(incluirBancoNoHeader ? { "X-Project-DB": DATABASE } : {}),
+            ...(incluirBancoNoHeader ? { "X-Project-DB": bancoProjetoAtivo } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
@@ -185,7 +184,7 @@ function lerCache(chave) {
 function escreverCache(chave, dados) {
   sessionStorage.setItem(chave, JSON.stringify({
     timestamp: Date.now(),
-    banco: DATABASE,
+    banco: bancoProjetoAtivo,
     dados,
   }));
 }
@@ -215,7 +214,25 @@ function invalidarCacheClientes() {
 }
 
 function cacheEhValido(cache) {
-  return Boolean(cache && cache.banco === DATABASE && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS);
+  return Boolean(cache && cache.banco === bancoProjetoAtivo && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS);
+}
+
+async function validarCacheChamadosComBanco(cache) {
+  const referencias = (cache?.dados || []).map((chamado) => ({
+    id: chamado.id,
+    lastUpdate: chamado.lastUpdate,
+  })).filter((chamado) => chamado.id);
+
+  if (!referencias.length) return { precisaAtualizar: false, validacoes: {} };
+
+  const resposta = await requisicaoApi('/chamados/validar-cache', {
+    method: 'POST',
+    body: JSON.stringify({ chamados: referencias }),
+  });
+
+  const validacoes = resposta?.validacoes || {};
+  const precisaAtualizar = Object.values(validacoes).some((item) => item?.needsRefresh);
+  return { precisaAtualizar, validacoes };
 }
 
 function atualizarChamadoEmMemoria(chamadoAtualizado) {
@@ -240,11 +257,20 @@ async function carregarChamadosSalvos(opcoes = {}) {
     if (cacheEhValido(cache)) {
       chamados = cache.dados;
       if (revalidar) {
-        requisicaoApi("/chamados?limit=200").then((dadosAtualizados) => {
-          chamados = dadosAtualizados || [];
-          escreverCacheChamados(chamados);
-          atualizarTelaComChamadosAtualizados();
-        }).catch(() => {});
+        validarCacheChamadosComBanco(cache).then(({ precisaAtualizar }) => {
+          if (!precisaAtualizar) return;
+          return requisicaoApi("/chamados?limit=200").then((dadosAtualizados) => {
+            chamados = dadosAtualizados || [];
+            escreverCacheChamados(chamados);
+            atualizarTelaComChamadosAtualizados();
+          });
+        }).catch(() => {
+          requisicaoApi("/chamados?limit=200").then((dadosAtualizados) => {
+            chamados = dadosAtualizados || [];
+            escreverCacheChamados(chamados);
+            atualizarTelaComChamadosAtualizados();
+          }).catch(() => {});
+        });
       }
       return;
     }
@@ -941,7 +967,7 @@ async function configurarTelaLogin() {
       seletorProjeto.innerHTML = (dadosProjetos.projetos || [])
         .map((projeto) => `<option value="${projeto}">${projeto}</option>`)
         .join("");
-      seletorProjeto.value = DATABASE;
+      seletorProjeto.value = bancoProjetoAtivo;
       seletorProjeto.addEventListener("change", () => definirBancoProjetoAtivo(seletorProjeto.value));
     }
   } catch {
@@ -958,7 +984,7 @@ async function configurarTelaLogin() {
     try {
       const autenticacao = await requisicaoApi("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario, senha, banco: DATABASE}),
+        body: JSON.stringify({ usuario, senha, banco: bancoProjetoAtivo}),
       });
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
@@ -984,7 +1010,7 @@ async function configurarPainelAdministrador() {
   const atual = document.getElementById("banco-atual-admin");
   if (!containerLista || !atual) return;
 
-  atual.textContent = DATABASE;
+  atual.textContent = bancoProjetoAtivo;
   const dados = await carregarProjetosDisponiveis();
   const projetos = dados.projetos || [];
 
@@ -1055,7 +1081,7 @@ async function inicializar() {
     try {
       await Promise.all([carregarChamadosSalvos(), carregarClientesSalvos()]);
     } catch {
-      alert(`Não foi possível carregar dados do banco '${DATABASE}'. Verifique o backend Python.`);
+      alert(`Não foi possível carregar dados do banco '${bancoProjetoAtivo}'. Verifique o backend Python.`);
       return;
     }
   }
