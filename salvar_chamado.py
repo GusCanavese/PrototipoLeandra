@@ -3,6 +3,7 @@ import re
 import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
 
@@ -20,11 +21,13 @@ nome_banco = "teste"
 
 POOL_SIZE = 1
 DB_CACHE_TTL_MINUTOS = 2
+VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
 app = Flask(__name__)
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
+validacao_bancos_cache = {}
 
 _connection_lock = Lock()
 _pools = {}
@@ -53,6 +56,7 @@ def conexao_pool(nome_banco=None):
     dados_pool = obter_pool(chave)
     pool = dados_pool["fila"]
     conn = None
+    descartar_conexao = False
 
     try:
         conn = pool.get_nowait()
@@ -72,26 +76,24 @@ def conexao_pool(nome_banco=None):
         try:
             conn.ping(True)
         except (AttributeError, MySQLdb.Error):
-            try:
-                conn.close()
-            except Exception:
-                pass
-            with _connection_lock:
-                dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
+            _descartar_conexao_pool(chave, conn)
             conn = criar_conexao(chave)
             with _connection_lock:
                 dados_pool["criadas"] += 1
         yield conn
+    except (MySQLdb.OperationalError, MySQLdb.InterfaceError) as erro:
+        descartar_conexao = _erro_mysql_recuperavel(erro)
+        raise
     finally:
+        if conn is None:
+            return
+        if descartar_conexao:
+            _descartar_conexao_pool(chave, conn)
+            return
         try:
             pool.put_nowait(conn)
         except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            with _connection_lock:
-                dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
+            _descartar_conexao_pool(chave, conn)
 
 
 def _erro_mysql_recuperavel(erro):
@@ -120,7 +122,6 @@ def _descartar_conexao_pool(chave, conn):
 
 
 def _executar_com_retry(nome_banco, operacao):
-    chave = nome_banco or db
     for tentativa in range(2):
         with conexao_pool(nome_banco) as conn:
             try:
@@ -128,7 +129,6 @@ def _executar_com_retry(nome_banco, operacao):
             except (MySQLdb.OperationalError, MySQLdb.InterfaceError) as erro:
                 if tentativa == 1 or not _erro_mysql_recuperavel(erro):
                     raise
-                _descartar_conexao_pool(chave, conn)
 
 
 def aplicar_headers_cors(resposta):
@@ -175,13 +175,26 @@ def listar_bancos_disponiveis():
     return bancos
 
 
+
+
+def validar_banco_disponivel(nome_banco):
+    agora = datetime.now()
+    expira_em: Optional[datetime] = validacao_bancos_cache.get(nome_banco)
+    if expira_em and agora < expira_em:
+        return
+
+    with conexao_pool(nome_banco):
+        pass
+
+    validacao_bancos_cache[nome_banco] = agora + timedelta(seconds=VALIDACAO_BANCO_TTL_SEGUNDOS)
+
+
 def obter_banco_requisicao():
     nome_banco = request.headers.get("X-Project-DB", "teste")
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
     try:
-        with conexao_pool(nome_banco):
-            pass
+        validar_banco_disponivel(nome_banco)
     except RuntimeError as erro:
         raise ValueError(str(erro)) from erro
     except (MySQLdb.OperationalError, MySQLdb.ProgrammingError) as erro:

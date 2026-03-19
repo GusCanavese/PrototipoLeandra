@@ -4,7 +4,8 @@ const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
-const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
+const CHAVE_CACHE_CLIENTES = "cacheClientes";
+const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
 const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
@@ -14,6 +15,7 @@ let chamados = [];
 let clientes = [];
 let usuarioAutenticado = null;
 let promessaCarregamentoChamados = null;
+let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
@@ -177,19 +179,25 @@ console.log("chamados-> ", chamados)
 function escreverCacheChamados(dados = chamados) {
 console.log("chamados-> ", chamados)
 
-  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: obterBancoProjetoAtual(), dados }));
+  escreverCacheSessao(CHAVE_CACHE_CHAMADOS, dados);
 }
 
 function invalidarCacheChamados() {
-  sessionStorage.removeItem(CHAVE_CACHE_CHAMADOS);
+  invalidarCacheSessao(CHAVE_CACHE_CHAMADOS);
+}
+
+function invalidarCacheClientes() {
+  invalidarCacheSessao(CHAVE_CACHE_CLIENTES);
 }
 
 async function carregarChamadosSalvos(opcoes = {}) {
+  if (promessaCarregamentoChamados) return promessaCarregamentoChamados;
+
   promessaCarregamentoChamados = (async () => {
   const { usarCache = true, revalidar = true } = opcoes;
   const cache = usarCache ? lerCacheChamados() : null;
   console.log("chacheSendoLido -> ",lerCacheChamados())
-  const cacheValido = cache && cache.banco === obterBancoProjetoAtual() && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
+  const cacheValido = cache && cache.banco === obterBancoProjetoAtual() && Date.now() - cache.timestamp < CACHE_DADOS_TTL_MS;
   console.log("cache válido? -> ", cacheValido)
 
   if (cacheValido) {
@@ -222,8 +230,52 @@ async function carregarDetalheChamado(idChamado) {
   return requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`);
 }
 
-async function carregarClientesSalvos() {
-  clientes = await requisicaoApi("/clientes");
+function lerCacheSessao(chave) {
+  try {
+    const bruto = sessionStorage.getItem(chave);
+    if (!bruto) return null;
+    const cache = JSON.parse(bruto);
+    if (!cache?.timestamp || cache.banco !== obterBancoProjetoAtual()) return null;
+    if (Date.now() - cache.timestamp >= CACHE_DADOS_TTL_MS) return null;
+    return cache.dados;
+  } catch {
+    return null;
+  }
+}
+
+function escreverCacheSessao(chave, dados) {
+  sessionStorage.setItem(chave, JSON.stringify({
+    timestamp: Date.now(),
+    banco: obterBancoProjetoAtual(),
+    dados,
+  }));
+}
+
+function invalidarCacheSessao(chave) {
+  sessionStorage.removeItem(chave);
+}
+
+async function carregarClientesSalvos(opcoes = {}) {
+  if (promessaCarregamentoClientes) return promessaCarregamentoClientes;
+
+  promessaCarregamentoClientes = (async () => {
+    const { usarCache = true } = opcoes;
+    const cache = usarCache ? lerCacheSessao(CHAVE_CACHE_CLIENTES) : null;
+    if (Array.isArray(cache)) {
+      clientes = cache;
+      return clientes;
+    }
+
+    clientes = await requisicaoApi("/clientes");
+    escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
+    return clientes;
+  })();
+
+  try {
+    return await promessaCarregamentoClientes;
+  } finally {
+    promessaCarregamentoClientes = null;
+  }
 }
 
 async function salvarClientes() {
@@ -231,6 +283,7 @@ async function salvarClientes() {
     method: "PUT",
     body: JSON.stringify(clientes),
   });
+  escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
 }
 
 async function salvarClienteIndividual(cliente) {
@@ -238,6 +291,7 @@ async function salvarClienteIndividual(cliente) {
     method: "POST",
     body: JSON.stringify(cliente),
   });
+  invalidarCacheClientes();
 }
 
 function obterClientePorLogin(login) {
@@ -768,6 +822,7 @@ function registrarFormularioCadastroCliente() {
     try {
       clientes.push(novoCliente);
       await salvarClienteIndividual(novoCliente);
+      escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
     } catch (erro) {
       if (alerta) {
         alerta.className = "alert alert-danger";
@@ -985,10 +1040,14 @@ async function inicializar() {
 
   await configurarTelaLogin();
 
-  const paginaProtegida = paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin;
-  if (paginaProtegida) {
+  const carregamentosIniciais = [];
+
+  if (paginaListaTecnico || paginaCliente) carregamentosIniciais.push(carregarChamadosSalvos());
+  if (paginaCriacao || paginaCadastroCliente) carregamentosIniciais.push(carregarClientesSalvos());
+
+  if (carregamentosIniciais.length) {
     try {
-      await Promise.all([carregarChamadosSalvos(), carregarClientesSalvos()]);
+      await Promise.all(carregamentosIniciais);
     } catch {
       alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtual()}'. Verifique o backend Python.`);
       return;
