@@ -7,6 +7,7 @@ from queue import Empty, Queue
 from threading import Lock
 
 import MySQLdb
+import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
 
 host     = "ballast.proxy.rlwy.net"
@@ -68,6 +69,18 @@ def conexao_pool(nome_banco=None):
                 raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
 
     try:
+        try:
+            conn.ping(True)
+        except (AttributeError, MySQLdb.Error):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with _connection_lock:
+                dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
+            conn = criar_conexao(chave)
+            with _connection_lock:
+                dados_pool["criadas"] += 1
         yield conn
     finally:
         try:
@@ -81,27 +94,41 @@ def conexao_pool(nome_banco=None):
                 dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
 
 
+def _erro_mysql_recuperavel(erro):
+    mensagem = str(erro).lower()
+    return any(
+        termo in mensagem
+        for termo in [
+            "server has gone away",
+            "lost connection",
+            "connection was killed",
+            "commands out of sync",
+            "gone away",
+        ]
+    )
+
+
+def _descartar_conexao_pool(chave, conn):
+    try:
+        conn.close()
+    except Exception:
+        pass
+    with _connection_lock:
+        dados_pool = _pools.get(chave)
+        if dados_pool:
+            dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
+
+
 def _executar_com_retry(nome_banco, operacao):
     chave = nome_banco or db
     for tentativa in range(2):
         with conexao_pool(nome_banco) as conn:
             try:
                 return operacao(conn)
-            except MySQLdb.OperationalError as erro:
-                mensagem = str(erro).lower()
-                erro_recuperavel = any(
-                    termo in mensagem for termo in ["server has gone away", "lost connection", "connection was killed"]
-                )
-                if tentativa == 1 or not erro_recuperavel:
+            except (MySQLdb.OperationalError, MySQLdb.InterfaceError) as erro:
+                if tentativa == 1 or not _erro_mysql_recuperavel(erro):
                     raise
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                with _connection_lock:
-                    dados_pool = _pools.get(chave)
-                    if dados_pool:
-                        dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
+                _descartar_conexao_pool(chave, conn)
 
 
 def aplicar_headers_cors(resposta):
@@ -560,7 +587,7 @@ async def api_projetos_listar():
 @app.route("/api/clientes", methods=["GET"])
 async def api_clientes_listar():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         clientes = await executar_em_thread(listar_clientes, nome_banco)
         return responder_json(clientes)
     except (ValueError, RuntimeError) as erro:
@@ -570,7 +597,7 @@ async def api_clientes_listar():
 @app.route("/api/clientes", methods=["PUT"])
 async def api_clientes_substituir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         clientes = request.json or []
         await executar_em_thread(substituir_clientes, nome_banco, clientes)
         return responder_json({"ok": True})
@@ -581,7 +608,7 @@ async def api_clientes_substituir():
 @app.route("/api/clientes", methods=["POST"])
 async def api_cliente_inserir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         await executar_em_thread(inserir_cliente, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
@@ -591,7 +618,7 @@ async def api_cliente_inserir():
 @app.route("/api/chamados", methods=["GET"])
 async def api_chamados_listar():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
         chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
@@ -603,7 +630,7 @@ async def api_chamados_listar():
 @app.route("/api/chamados/<id_chamado>", methods=["GET"])
 async def api_chamado_detalhar(id_chamado):
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado)
         if not chamado:
             return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
@@ -615,7 +642,7 @@ async def api_chamado_detalhar(id_chamado):
 @app.route("/api/chamados", methods=["PUT"])
 async def api_chamados_substituir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
@@ -625,7 +652,7 @@ async def api_chamados_substituir():
 @app.route("/api/chamados", methods=["POST"])
 async def api_chamado_inserir():
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
         return responder_json({"ok": True, "chamado": chamado_salvo}, 201)
     except (ValueError, RuntimeError) as erro:
@@ -635,7 +662,7 @@ async def api_chamado_inserir():
 @app.route("/api/chamados/<id_chamado>", methods=["PUT"])
 async def api_chamado_atualizar(id_chamado):
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         chamado = request.json or {}
         if not chamado.get("id"):
             chamado["id"] = id_chamado
@@ -648,7 +675,7 @@ async def api_chamado_atualizar(id_chamado):
 @app.route("/api/chamados/<id_chamado>", methods=["DELETE"])
 async def api_chamado_remover(id_chamado):
     try:
-        nome_banco = "teste"
+        nome_banco = obter_banco_requisicao()
         await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:

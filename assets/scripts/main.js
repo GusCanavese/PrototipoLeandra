@@ -4,7 +4,6 @@ const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
-const DATABASE = "teste"
 const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
@@ -18,6 +17,10 @@ let promessaCarregamentoChamados = null;
 let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
+
+function obterBancoProjetoAtual() {
+  return (bancoProjetoAtivo || "teste").trim() || "teste";
+}
 
 function definirBancoProjetoAtivo(nomeBanco) {
   bancoProjetoAtivo = (nomeBanco || "teste").trim();
@@ -104,7 +107,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
         const resposta = await fetch(`${baseUrl}${caminho}`, {
           headers: {
             "Content-Type": "application/json",
-            ...(incluirBancoNoHeader ? { "X-Project-DB": DATABASE } : {}),
+            ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtual() } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
@@ -163,7 +166,7 @@ function lerCacheChamados() {
     if (!bruto) return null;
     const cache = JSON.parse(bruto);
     if (!cache?.timestamp || !Array.isArray(cache?.dados)) return null;
-    return cache.dados;
+    return cache;
   } catch {
     return null;
   }
@@ -174,7 +177,7 @@ console.log("chamados-> ", chamados)
 function escreverCacheChamados(dados = chamados) {
 console.log("chamados-> ", chamados)
 
-  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: DATABASE, dados }));
+  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: obterBancoProjetoAtual(), dados }));
 }
 
 function invalidarCacheChamados() {
@@ -186,7 +189,7 @@ async function carregarChamadosSalvos(opcoes = {}) {
   const { usarCache = true, revalidar = true } = opcoes;
   const cache = usarCache ? lerCacheChamados() : null;
   console.log("chacheSendoLido -> ",lerCacheChamados())
-  const cacheValido = cache && cache.banco === DATABASE && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
+  const cacheValido = cache && cache.banco === obterBancoProjetoAtual() && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
   console.log("cache válido? -> ", cacheValido)
 
   if (cacheValido) {
@@ -873,7 +876,7 @@ async function configurarTelaLogin() {
       seletorProjeto.innerHTML = (dadosProjetos.projetos || [])
         .map((projeto) => `<option value="${projeto}">${projeto}</option>`)
         .join("");
-      seletorProjeto.value = DATABASE;
+      seletorProjeto.value = obterBancoProjetoAtual();
       seletorProjeto.addEventListener("change", () => definirBancoProjetoAtivo(seletorProjeto.value));
     }
   } catch {
@@ -890,7 +893,7 @@ async function configurarTelaLogin() {
     try {
       const autenticacao = await requisicaoApi("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario, senha, banco: DATABASE}),
+        body: JSON.stringify({ usuario, senha, banco: obterBancoProjetoAtual()}),
       });
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
@@ -916,7 +919,7 @@ async function configurarPainelAdministrador() {
   const atual = document.getElementById("banco-atual-admin");
   if (!containerLista || !atual) return;
 
-  atual.textContent = DATABASE;
+  atual.textContent = obterBancoProjetoAtual();
   const dados = await carregarProjetosDisponiveis();
   const projetos = dados.projetos || [];
 
@@ -987,7 +990,7 @@ async function inicializar() {
     try {
       await Promise.all([carregarChamadosSalvos(), carregarClientesSalvos()]);
     } catch {
-      alert(`Não foi possível carregar dados do banco '${DATABASE}'. Verifique o backend Python.`);
+      alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtual()}'. Verifique o backend Python.`);
       return;
     }
   }
