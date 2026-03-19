@@ -4,7 +4,7 @@ const CHAVE_LOGIN = "usuarioAutenticado";
 const CHAVE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CHAMADOS = "cacheChamados";
 const CHAVE_CLIENTES = "cacheClientes";
-const DATABASE = "teste";
+const DATABASE_PADRAO = "teste";
 const TEMPO_CACHE = 5 * 60 * 1000;
 const TIMEOUT = 25000;
 const RETRY = [350, 900];
@@ -16,10 +16,10 @@ let clientes = [];
 let usuario = null;
 let carregandoChamados = null;
 let operacoes = 0;
-let bancoProjetoAtivo = localStorage.getItem(CHAVE_BANCO) || "teste";
+let bancoProjetoAtivo = localStorage.getItem(CHAVE_BANCO) || DATABASE_PADRAO;
 
 function salvarBanco(nome) {
-  bancoProjetoAtivo = (nome || "teste").trim();
+  bancoProjetoAtivo = (nome || DATABASE_PADRAO).trim();
   localStorage.setItem(CHAVE_BANCO, bancoProjetoAtivo);
 }
 
@@ -49,7 +49,7 @@ async function api(path, options = {}, { semBanco = false } = {}) {
         const resposta = await fetch(`${API_URL}${path}`, {
           headers: {
             "Content-Type": "application/json",
-            ...(semBanco ? {} : { "X-Project-DB": DATABASE }),
+            ...(semBanco ? {} : { "X-Project-DB": bancoProjetoAtivo }),
             ...(options.headers || {}),
           },
           ...options,
@@ -100,11 +100,11 @@ function storageJson(storage, key, value) {
 function cacheLista(chave, lista, resumir = false) {
   if (lista === undefined) {
     const cache = storageJson(sessionStorage, chave);
-    return cache?.banco === DATABASE && Array.isArray(cache?.dados) && Date.now() - cache.timestamp < TEMPO_CACHE ? cache.dados : null;
+    return cache?.banco === bancoProjetoAtivo && Array.isArray(cache?.dados) && Date.now() - cache.timestamp < TEMPO_CACHE ? cache.dados : null;
   }
   storageJson(sessionStorage, chave, lista === null ? null : {
     timestamp: Date.now(),
-    banco: DATABASE,
+    banco: bancoProjetoAtivo,
     dados: resumir ? lista.map((item) => ({
       id: item.id,
       client: item.client,
@@ -215,8 +215,13 @@ async function carregarClientes({ usarCache = true, revalidar = true } = {}) {
 }
 
 async function salvarCliente(cliente) {
-  await api("/clientes", { method: "POST", body: JSON.stringify(cliente) });
+  const salvo = await api("/clientes", { method: "POST", body: JSON.stringify(cliente) });
+  const clienteSalvo = salvo?.cliente || cliente;
+  const index = clientes.findIndex((item) => item.login === clienteSalvo.login);
+  if (index >= 0) clientes.splice(index, 1, { ...clientes[index], ...clienteSalvo });
+  else clientes.unshift(clienteSalvo);
   cacheLista(CHAVE_CLIENTES, clientes);
+  return clienteSalvo;
 }
 
 async function salvarChamado(chamado) {
@@ -466,11 +471,10 @@ function configurarCriacao() {
     chamado.client = cliente.nomeCompleto;
     if (!chamado.client || !chamado.clienteLogin || !chamado.summary || !descricao) return;
 
-    chamados.unshift(chamado);
     try {
       const salvo = await api("/chamados", { method: "POST", body: JSON.stringify(chamado) });
-      if (salvo?.chamado?.id) chamado.id = salvo.chamado.id;
-      syncChamados(chamado);
+      const chamadoSalvo = { ...chamado, ...(salvo?.chamado || {}) };
+      syncChamados(chamadoSalvo);
       notificarChamados();
       window.location.href = usuario?.tipo === "Cliente" ? "cliente.html" : "index.html";
     } catch (erro) {
@@ -503,7 +507,6 @@ function configurarCadastroCliente() {
       return;
     }
     try {
-      clientes.push(cliente);
       await salvarCliente(cliente);
       if (alerta) { alerta.className = "alert alert-success"; alerta.textContent = "Cliente cadastrado com sucesso. Agora você pode abrir o chamado."; }
       setTimeout(() => { window.location.href = `create.html?clienteLogin=${encodeURIComponent(cliente.login)}`; }, 800);
@@ -531,7 +534,7 @@ async function configurarLogin() {
     const dados = await api("/projetos", {}, { semBanco: true });
     if (projeto) {
       projeto.innerHTML = (dados.projetos || []).map((item) => `<option value="${item}">${item}</option>`).join("");
-      projeto.value = DATABASE;
+      projeto.value = bancoProjetoAtivo;
       projeto.addEventListener("change", () => salvarBanco(projeto.value));
     }
   } catch {
@@ -543,7 +546,7 @@ async function configurarLogin() {
     try {
       const auth = await api("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario: document.getElementById("campo-usuario").value.trim(), senha: document.getElementById("campo-senha").value.trim(), banco: DATABASE }),
+        body: JSON.stringify({ usuario: document.getElementById("campo-usuario").value.trim(), senha: document.getElementById("campo-senha").value.trim(), banco: bancoProjetoAtivo }),
       });
       if (auth.banco) salvarBanco(auth.banco);
       usuario = { usuario: document.getElementById("campo-usuario").value.trim(), tipo: auth.tipo, clienteId: auth.clienteId };
@@ -559,7 +562,7 @@ async function configurarAdmin() {
   const lista = document.getElementById("lista-projetos-admin");
   const atual = document.getElementById("banco-atual-admin");
   if (!lista || !atual) return;
-  atual.textContent = DATABASE;
+  atual.textContent = bancoProjetoAtivo;
   const dados = await api("/projetos", {}, { semBanco: true });
   lista.innerHTML = "";
   (dados.projetos || []).forEach((item) => {
@@ -589,7 +592,7 @@ async function iniciar() {
   await configurarLogin();
 
   if (protegida) {
-    try { await Promise.all([carregarChamados(), carregarClientes()]); } catch { return alert(`Não foi possível carregar dados do banco '${DATABASE}'. Verifique o backend Python.`); }
+    try { await Promise.all([carregarChamados(), carregarClientes()]); } catch { return alert(`Não foi possível carregar dados do banco '${bancoProjetoAtivo}'. Verifique o backend Python.`); }
   }
   if (!usuario && protegida) return void (window.location.href = "login.html");
   if (admin && usuario?.tipo !== "Administrador") return void (window.location.href = usuario?.tipo === "Cliente" ? "cliente.html" : "index.html");
