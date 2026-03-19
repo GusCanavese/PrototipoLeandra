@@ -18,7 +18,7 @@ port     =  15192
 nome_banco = "teste"
 
 
-POOL_SIZE = 8
+POOL_SIZE = 1
 DB_CACHE_TTL_MINUTOS = 2
 
 app = Flask(__name__)
