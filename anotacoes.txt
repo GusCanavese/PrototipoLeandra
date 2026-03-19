@@ -1,0 +1,5 @@
+1 - criar uma anotação para pagamentos          ===> Samuel (andamento)
+2 - diminuir tempo de carregamento das páginas  ===> Gustavo (concluído, reduzido a quantidade de informações carregadas por página)
+3 - hospedagem em um dominio real
+4 - testar conexões simultâneas
+5 - log
