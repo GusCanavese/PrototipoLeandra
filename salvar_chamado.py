@@ -1,249 +1,343 @@
-import asyncio
 import json
 import re
+import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from queue import Empty, Queue
 from threading import Lock
 
 import MySQLdb
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, make_response, request
 
-HOST = "ballast.proxy.rlwy.net"
-USER = "root"
-PASSWORD = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-DB_PADRAO = "teste"
-PORT = 15192
-POOL_MAX = 8
-CACHE_BANCOS_MIN = 2
-BANCOS_SISTEMA = {"information_schema", "mysql", "performance_schema", "sys"}
-CAMPOS_CHAMADO = [
-    "id", "client", "clienteLogin", "summary", "description", "priority", "status",
-    "processNumber", "hasPartnership", "partnershipPercent", "partnershipWith", "openedAt", "lastUpdate",
-]
+host     = "ballast.proxy.rlwy.net"
+user     = "root"
+password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
+db       = "teste"
+port     =  15192
+nome_banco = "teste"
+
+
+POOL_SIZE = 8
+DB_CACHE_TTL_MINUTOS = 2
 
 app = Flask(__name__)
-cache_bancos = {"valores": [], "expira": datetime.min}
-lock_pool = Lock()
-pools = {}
+
+SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
+bancos_cache = {"valores": [], "expira_em": datetime.min}
+
+_connection_lock = Lock()
+_pools = {}
+
+
+
+def criar_conexao(nome_banco=None):
+    banco_destino = nome_banco or db
+    return MySQLdb.connect(host=host, user=user, passwd=password, db=banco_destino, port=port, charset="utf8mb4")
+
+
+def obter_pool(nome_banco=None):
+    chave = nome_banco or db
+    with _connection_lock:
+        dados_pool = _pools.get(chave)
+        if dados_pool is None:
+            dados_pool = {"fila": Queue(maxsize=POOL_SIZE), "criadas": 0}
+            _pools[chave] = dados_pool
+    return dados_pool
+
 
 
 @contextmanager
-def conectar(nome_banco=DB_PADRAO):
-    conexao = None
-    with lock_pool:
-        pool = pools.setdefault(nome_banco, {"fila": Queue(maxsize=POOL_MAX), "total": 0})
+def conexao_pool(nome_banco=None):
+    chave = nome_banco or db
+    dados_pool = obter_pool(chave)
+    pool = dados_pool["fila"]
+    conn = None
 
     try:
-        conexao = pool["fila"].get_nowait()
+        conn = pool.get_nowait()
     except Empty:
-        with lock_pool:
-            if pool["total"] < POOL_MAX:
-                conexao = MySQLdb.connect(
-                    host=HOST, user=USER, passwd=PASSWORD, db=nome_banco, port=PORT, charset="utf8mb4"
-                )
-                pool["total"] += 1
-        if conexao is None:
+        with _connection_lock:
+            if dados_pool["criadas"] < POOL_SIZE:
+                conn = criar_conexao(chave)
+                dados_pool["criadas"] += 1
+
+        if conn is None:
             try:
-                conexao = pool["fila"].get(timeout=5)
+                conn = pool.get(timeout=5)
             except Empty as erro:
                 raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
 
     try:
-        yield conexao
+        yield conn
     finally:
         try:
-            pool["fila"].put_nowait(conexao)
+            pool.put_nowait(conn)
         except Exception:
             try:
-                conexao.close()
+                conn.close()
             except Exception:
                 pass
-            with lock_pool:
-                pool["total"] = max(0, pool["total"] - 1)
+            with _connection_lock:
+                dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
 
 
-def banco(nome_banco, acao):
-    nome_banco = nome_banco or DB_PADRAO
+def _executar_com_retry(nome_banco, operacao):
+    chave = nome_banco or db
     for tentativa in range(2):
-        with conectar(nome_banco) as conexao:
+        with conexao_pool(nome_banco) as conn:
             try:
-                return acao(conexao)
+                return operacao(conn)
             except MySQLdb.OperationalError as erro:
-                texto = str(erro).lower()
-                if tentativa == 1 or not any(item in texto for item in ["server has gone away", "lost connection", "connection was killed"]):
+                mensagem = str(erro).lower()
+                erro_recuperavel = any(
+                    termo in mensagem for termo in ["server has gone away", "lost connection", "connection was killed"]
+                )
+                if tentativa == 1 or not erro_recuperavel:
                     raise
                 try:
-                    conexao.close()
+                    conn.close()
                 except Exception:
                     pass
-                with lock_pool:
-                    if nome_banco in pools:
-                        pools[nome_banco]["total"] = max(0, pools[nome_banco]["total"] - 1)
+                with _connection_lock:
+                    dados_pool = _pools.get(chave)
+                    if dados_pool:
+                        dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
 
 
-def consultar(nome_banco, sql, params=(), unico=False, dicionario=True):
-    return banco(
-        nome_banco,
-        lambda conexao: _consultar(conexao, sql, params, unico, dicionario),
-    )
+def aplicar_headers_cors(resposta):
+    resposta.headers["Access-Control-Allow-Origin"] = "*"
+    resposta.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
+    resposta.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    return resposta
 
 
-def _consultar(conexao, sql, params, unico, dicionario):
-    cursor = conexao.cursor(MySQLdb.cursors.DictCursor) if dicionario else conexao.cursor()
-    cursor.execute(sql, params)
-    resultado = cursor.fetchone() if unico else cursor.fetchall()
-    cursor.close()
-    return resultado
-
-
-def executar(nome_banco, sql, params=()):
-    banco(nome_banco, lambda conexao: _executar(conexao, sql, params))
-
-
-def _executar(conexao, sql, params):
-    cursor = conexao.cursor()
-    cursor.execute(sql, params)
-    conexao.commit()
-    cursor.close()
-
-
-def transacao(nome_banco, acao):
-    def rodar(conexao):
-        try:
-            acao(conexao)
-            conexao.commit()
-        except Exception:
-            conexao.rollback()
-            raise
-
-    banco(nome_banco, rodar)
-
-
-def resposta(payload, status=200):
-    retorno = jsonify(payload)
-    retorno.status_code = status
-    retorno.headers["Access-Control-Allow-Origin"] = "*"
-    retorno.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
-    retorno.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
-    return retorno
+def responder_json(payload, status=200):
+    resposta = jsonify(payload)
+    resposta.status_code = status
+    return aplicar_headers_cors(resposta)
 
 
 @app.before_request
-def preflight():
-    return resposta({}, 200) if request.method == "OPTIONS" else None
+def responder_preflight_options():
+    if request.method == "OPTIONS":
+        return aplicar_headers_cors(make_response("", 200))
+    return None
 
 
 @app.after_request
-def cors(retorno):
-    retorno.headers["Access-Control-Allow-Origin"] = "*"
-    retorno.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
-    retorno.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
-    return retorno
+def garantir_cors_global(resposta):
+    return aplicar_headers_cors(resposta)
 
 
-@app.errorhandler(MySQLdb.MySQLError)
-def erro_mysql(erro):
-    return resposta({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
-
-
-async def em_thread(funcao, *args):
-    return await asyncio.to_thread(funcao, *args)
-
-
-def inteiro(valor, padrao=None, minimo=1, maximo=1000):
-    if valor in (None, ""):
-        return padrao
-    try:
-        valor = int(valor)
-    except (TypeError, ValueError) as erro:
-        raise ValueError("Parâmetro de paginação inválido.") from erro
-    if valor < minimo or valor > maximo:
-        raise ValueError(f"Parâmetro deve estar entre {minimo} e {maximo}.")
-    return valor
-
-
-def banco_valido(nome_banco):
+def nome_banco_valido(nome_banco):
     return bool(re.fullmatch(r"[A-Za-z0-9_]+", nome_banco or ""))
 
 
-def listar_bancos():
-    if datetime.now() < cache_bancos["expira"] and cache_bancos["valores"]:
-        return cache_bancos["valores"]
-    cache_bancos["valores"] = [
-        linha[0] for linha in consultar(DB_PADRAO, "SHOW DATABASES", dicionario=False) if linha[0] not in BANCOS_SISTEMA
-    ]
-    cache_bancos["expira"] = datetime.now() + timedelta(minutes=CACHE_BANCOS_MIN)
-    return cache_bancos["valores"]
+def listar_bancos_disponiveis():
+    if datetime.now() < bancos_cache["expira_em"] and bancos_cache["valores"]:
+        return bancos_cache["valores"]
+
+    with conexao_pool(db) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SHOW DATABASES")
+        bancos = [linha[0] for linha in cursor.fetchall() if linha[0] not in SISTEMA_DATABASES]
+        cursor.close()
+
+    bancos_cache["valores"] = bancos
+    bancos_cache["expira_em"] = datetime.now() + timedelta(minutes=DB_CACHE_TTL_MINUTOS)
+    return bancos
+
+
+def obter_banco_requisicao():
+    nome_banco = request.headers.get("X-Project-DB", "teste")
+    if not nome_banco_valido(nome_banco):
+        raise ValueError("Nome de banco inválido.")
+    try:
+        with conexao_pool(nome_banco):
+            pass
+    except RuntimeError as erro:
+        raise ValueError(str(erro)) from erro
+    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError) as erro:
+        raise ValueError(f"Banco '{nome_banco}' não encontrado.") from erro
+    return nome_banco
+
+
+def normalizar_anexos(anexos):
+    if not anexos:
+        return []
+    if isinstance(anexos, str):
+        try:
+            return json.loads(anexos)
+        except json.JSONDecodeError:
+            return []
+    return anexos
+
+
+def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
+    if valor is None or valor == "":
+        return padrao
+    try:
+        numero = int(valor)
+    except (TypeError, ValueError):
+        raise ValueError("Parâmetro de paginação inválido.")
+    if numero < minimo or numero > maximo:
+        raise ValueError(f"Parâmetro deve estar entre {minimo} e {maximo}.")
+    return numero
+
+
+async def executar_em_thread(funcao, *args, **kwargs):
+    return await asyncio.to_thread(funcao, *args, **kwargs)
+
+
+def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=True):
+    def operacao(conn):
+        cursor_cls = MySQLdb.cursors.DictCursor if dict_cursor else None
+        cursor = conn.cursor(cursor_cls) if cursor_cls else conn.cursor()
+        cursor.execute(sql, params or ())
+        dados = cursor.fetchone() if fetch_one else cursor.fetchall()
+        cursor.close()
+        return dados
+
+    return _executar_com_retry(nome_banco, operacao)
+
+
+def executar_write(nome_banco, sql, params=None):
+    def operacao(conn):
+        cursor = conn.cursor()
+        cursor.execute(sql, params or ())
+        conn.commit()
+        cursor.close()
+
+    _executar_com_retry(nome_banco, operacao)
+
+
+def executar_transacao(nome_banco, callback):
+    def operacao(conn):
+        try:
+            callback(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    _executar_com_retry(nome_banco, operacao)
 
 
 def listar_clientes(nome_banco):
+    registros = executar_select(
+        nome_banco,
+        """
+        SELECT usuario, senha, nome_completo, telefone, documento
+        FROM usuarios
+        WHERE tipo = 'Cliente'
+        ORDER BY usuario
+        """,
+    )
     return [
         {
-            "nomeCompleto": item["nome_completo"] or "",
-            "telefone": item["telefone"] or "",
-            "documento": item["documento"] or "",
-            "login": item["usuario"],
-            "senha": item["senha"],
+            "nomeCompleto": r["nome_completo"] or "",
+            "telefone": r["telefone"] or "",
+            "documento": r["documento"] or "",
+            "login": r["usuario"],
+            "senha": r["senha"],
         }
-        for item in consultar(
-            nome_banco,
-            "SELECT usuario, senha, nome_completo, telefone, documento FROM usuarios WHERE tipo = 'Cliente' ORDER BY usuario",
-        )
+        for r in registros
     ]
 
 
-def salvar_clientes(nome_banco, clientes):
-    def rodar(conexao):
-        cursor = conexao.cursor()
+def substituir_clientes(nome_banco, clientes):
+    def transacao(conn):
+        cursor = conn.cursor()
         cursor.execute("DELETE FROM usuarios WHERE tipo = 'Cliente'")
         for cliente in clientes:
             cursor.execute(
-                "INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento) VALUES (%s, %s, 'Cliente', %s, %s, %s)",
-                (cliente["login"], cliente["senha"], cliente.get("nomeCompleto") or None, cliente.get("telefone") or None, cliente.get("documento") or None),
+                """
+                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
+                VALUES (%s, %s, 'Cliente', %s, %s, %s)
+                """,
+                (
+                    cliente["login"],
+                    cliente["senha"],
+                    cliente.get("nomeCompleto") or None,
+                    cliente.get("telefone") or None,
+                    cliente.get("documento") or None,
+                ),
             )
         cursor.close()
 
-    transacao(nome_banco, rodar)
+    executar_transacao(nome_banco, transacao)
 
 
-def criar_cliente(nome_banco, cliente):
-    executar(
+def inserir_cliente(nome_banco, cliente):
+    executar_write(
         nome_banco,
-        "INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento) VALUES (%s, %s, 'Cliente', %s, %s, %s)",
-        (cliente["login"], cliente["senha"], cliente.get("nomeCompleto") or None, cliente.get("telefone") or None, cliente.get("documento") or None),
+        """
+        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
+        VALUES (%s, %s, 'Cliente', %s, %s, %s)
+        """,
+        (
+            cliente["login"],
+            cliente["senha"],
+            cliente.get("nomeCompleto") or None,
+            cliente.get("telefone") or None,
+            cliente.get("documento") or None,
+        ),
     )
+
 
 
 def listar_chamados(nome_banco, limite=50, offset=0):
+    chamados = executar_select(
+        nome_banco,
+        """
+        SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao
+        FROM chamados
+        ORDER BY ultima_atualizacao DESC, id_chamado DESC
+        LIMIT %s OFFSET %s
+        """,
+        (limite, offset),
+    )
     return [
         {
-            "id": item["id_chamado"],
-            "client": item["cliente"],
-            "clienteLogin": item["login_cliente"],
-            "summary": item["resumo"],
-            "priority": item["prioridade"],
-            "status": item["status"],
-            "openedAt": item["abertura"] or "",
-            "lastUpdate": item["ultima_atualizacao"] or "",
+            "id": c["id_chamado"],
+            "client": c["cliente"],
+            "clienteLogin": c["login_cliente"],
+            "summary": c["resumo"],
+            "priority": c["prioridade"],
+            "status": c["status"],
+            "openedAt": c["abertura"] or "",
+            "lastUpdate": c["ultima_atualizacao"] or "",
         }
-        for item in consultar(
-            nome_banco,
-            "SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao FROM chamados ORDER BY ultima_atualizacao DESC, id_chamado DESC LIMIT %s OFFSET %s",
-            (limite, offset),
-        )
+        for c in chamados
     ]
 
 
-def detalhe_chamado(nome_banco, id_chamado):
-    chamado = consultar(
+def obter_chamado_detalhe(nome_banco, id_chamado):
+    chamado = executar_select(
         nome_banco,
-        "SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status, numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao FROM chamados WHERE id_chamado = %s",
+        """
+        SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
+               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+        FROM chamados
+        WHERE id_chamado = %s
+        """,
         (id_chamado,),
-        unico=True,
+        fetch_one=True,
     )
     if not chamado:
         return None
+
+    atualizacoes = executar_select(
+        nome_banco,
+        """
+        SELECT autor, mensagem, data_atualizacao, anexos
+        FROM chamado_atualizacoes
+        WHERE id_chamado = %s
+        ORDER BY id DESC
+        """,
+        (id_chamado,),
+    )
+
     return {
         "id": chamado["id_chamado"],
         "client": chamado["cliente"],
@@ -260,195 +354,341 @@ def detalhe_chamado(nome_banco, id_chamado):
         "lastUpdate": chamado["ultima_atualizacao"] or "",
         "updates": [
             {
-                "author": item["autor"],
-                "message": item["mensagem"],
-                "date": item["data_atualizacao"],
-                "attachments": json.loads(item["anexos"]) if item["anexos"] else [],
+                "author": atu["autor"],
+                "message": atu["mensagem"],
+                "date": atu["data_atualizacao"],
+                "attachments": normalizar_anexos(atu["anexos"]),
             }
-            for item in consultar(
-                nome_banco,
-                "SELECT autor, mensagem, data_atualizacao, anexos FROM chamado_atualizacoes WHERE id_chamado = %s ORDER BY id DESC",
-                (id_chamado,),
-            )
+            for atu in atualizacoes
         ],
     }
 
 
-def salvar_lista_chamados(nome_banco, chamados):
-    def rodar(conexao):
-        cursor = conexao.cursor()
+def substituir_chamados(nome_banco, chamados):
+    def transacao(conn):
+        cursor = conn.cursor()
         cursor.execute("DELETE FROM chamado_atualizacoes")
         cursor.execute("DELETE FROM chamados")
+
         for chamado in chamados:
-            _salvar_chamado(cursor, normalizar_chamado(chamado), sobrescrever=True)
+            cursor.execute(
+                """
+                INSERT INTO chamados (
+                    id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
+                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    chamado["id"],
+                    chamado["client"],
+                    chamado["clienteLogin"],
+                    chamado["summary"],
+                    chamado["description"],
+                    chamado["priority"],
+                    chamado["status"],
+                    chamado["processNumber"],
+                    1 if chamado.get("hasPartnership") else 0,
+                    chamado.get("partnershipPercent", ""),
+                    chamado.get("partnershipWith", ""),
+                    chamado["openedAt"],
+                    chamado["lastUpdate"],
+                ),
+            )
+
+            for atualizacao in chamado.get("updates", []):
+                cursor.execute(
+                    """
+                    INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        chamado["id"],
+                        atualizacao.get("author", "Técnico"),
+                        atualizacao.get("message", ""),
+                        atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")),
+                        json.dumps(atualizacao.get("attachments", []), ensure_ascii=False),
+                    ),
+                )
+
         cursor.close()
 
-    transacao(nome_banco, rodar)
+    executar_transacao(nome_banco, transacao)
 
 
-def normalizar_chamado(chamado):
-    dados = {campo: chamado.get(campo, "") for campo in CAMPOS_CHAMADO}
-    dados["updates"] = chamado.get("updates", [])
-    dados["hasPartnership"] = bool(chamado.get("hasPartnership"))
-    return dados
+def salvar_chamado_individual(nome_banco, chamado):
+    chamado_normalizado = dict(chamado or {})
 
+    def transacao(conn):
+        cursor = conn.cursor()
 
-def proximo_id(cursor):
-    cursor.execute("SELECT id_chamado FROM chamados WHERE id_chamado REGEXP '^C-[0-9]+$' ORDER BY CAST(SUBSTRING(id_chamado, 3) AS UNSIGNED) DESC LIMIT 1")
-    ultimo = cursor.fetchone()
-    try:
-        return f"C-{int(str(ultimo[0]).split('-')[-1]) + 1}" if ultimo and ultimo[0] else "C-1"
-    except (TypeError, ValueError):
-        return "C-1"
-
-
-def _salvar_chamado(cursor, chamado, sobrescrever=False):
-    if not (chamado["id"] or "").strip():
-        chamado["id"] = proximo_id(cursor)
-    cursor.execute(
-        """
-        INSERT INTO chamados (
-            id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-            numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            cliente = VALUES(cliente), login_cliente = VALUES(login_cliente), resumo = VALUES(resumo),
-            descricao = VALUES(descricao), prioridade = VALUES(prioridade), status = VALUES(status),
-            numero_processo = VALUES(numero_processo), parceria = VALUES(parceria),
-            parceria_porcentagem = VALUES(parceria_porcentagem), parceria_com = VALUES(parceria_com),
-            abertura = VALUES(abertura), ultima_atualizacao = VALUES(ultima_atualizacao)
-        """,
-        (
-            chamado["id"], chamado["client"], chamado["clienteLogin"], chamado["summary"], chamado["description"],
-            chamado["priority"], chamado["status"], chamado["processNumber"], 1 if chamado["hasPartnership"] else 0,
-            chamado["partnershipPercent"], chamado["partnershipWith"], chamado["openedAt"], chamado["lastUpdate"],
-        ),
-    )
-    if sobrescrever:
-        for update in chamado.get("updates", []):
+        id_chamado = (chamado_normalizado.get("id") or "").strip()
+        if not id_chamado:
             cursor.execute(
-                "INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos) VALUES (%s, %s, %s, %s, %s)",
-                (chamado["id"], update.get("author", "Técnico"), update.get("message", ""), update.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")), json.dumps(update.get("attachments", []), ensure_ascii=False)),
+                """
+                SELECT id_chamado
+                FROM chamados
+                WHERE id_chamado REGEXP '^C-[0-9]+$'
+                ORDER BY CAST(SUBSTRING(id_chamado, 3) AS UNSIGNED) DESC
+                LIMIT 1
+                """
             )
-        return
+            ultimo = cursor.fetchone()
+            proximo_numero = 1
+            if ultimo and ultimo[0]:
+                try:
+                    proximo_numero = int(str(ultimo[0]).split("-")[-1]) + 1
+                except (ValueError, TypeError):
+                    proximo_numero = 1
+            id_chamado = f"C-{proximo_numero}"
+            chamado_normalizado["id"] = id_chamado
 
-    cursor.execute("SELECT autor, mensagem, data_atualizacao, anexos FROM chamado_atualizacoes WHERE id_chamado = %s", (chamado["id"],))
-    existentes = {(item[0] or "", item[1] or "", item[2] or "", item[3] or "[]") for item in cursor.fetchall()}
-    for update in chamado.get("updates", []):
-        assinatura = (
-            update.get("author", "Técnico") or "",
-            update.get("message", "") or "",
-            update.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")) or "",
-            json.dumps(update.get("attachments", []), ensure_ascii=False),
+        cursor.execute(
+            """
+            INSERT INTO chamados (
+                id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
+                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                cliente = VALUES(cliente),
+                login_cliente = VALUES(login_cliente),
+                resumo = VALUES(resumo),
+                descricao = VALUES(descricao),
+                prioridade = VALUES(prioridade),
+                status = VALUES(status),
+                numero_processo = VALUES(numero_processo),
+                parceria = VALUES(parceria),
+                parceria_porcentagem = VALUES(parceria_porcentagem),
+                parceria_com = VALUES(parceria_com),
+                abertura = VALUES(abertura),
+                ultima_atualizacao = VALUES(ultima_atualizacao)
+            """,
+            (
+                chamado_normalizado["id"],
+                chamado_normalizado["client"],
+                chamado_normalizado["clienteLogin"],
+                chamado_normalizado["summary"],
+                chamado_normalizado["description"],
+                chamado_normalizado["priority"],
+                chamado_normalizado["status"],
+                chamado_normalizado["processNumber"],
+                1 if chamado_normalizado.get("hasPartnership") else 0,
+                chamado_normalizado.get("partnershipPercent", ""),
+                chamado_normalizado.get("partnershipWith", ""),
+                chamado_normalizado["openedAt"],
+                chamado_normalizado["lastUpdate"],
+            ),
         )
-        if assinatura not in existentes:
+
+        cursor.execute(
+            """
+            SELECT autor, mensagem, data_atualizacao, anexos
+            FROM chamado_atualizacoes
+            WHERE id_chamado = %s
+            """,
+            (chamado_normalizado["id"],),
+        )
+        existentes = {
+            (
+                row[0] or "",
+                row[1] or "",
+                row[2] or "",
+                row[3] or "[]",
+            )
+            for row in cursor.fetchall()
+        }
+
+        for atualizacao in chamado_normalizado.get("updates", []):
+            anexos_serializados = json.dumps(atualizacao.get("attachments", []), ensure_ascii=False)
+            assinatura = (
+                atualizacao.get("author", "Técnico") or "",
+                atualizacao.get("message", "") or "",
+                atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")) or "",
+                anexos_serializados,
+            )
+            if assinatura in existentes:
+                continue
             cursor.execute(
-                "INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos) VALUES (%s, %s, %s, %s, %s)",
-                (chamado["id"], assinatura[0], assinatura[1], assinatura[2], assinatura[3]),
+                """
+                INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    chamado_normalizado["id"],
+                    assinatura[0],
+                    assinatura[1],
+                    assinatura[2],
+                    assinatura[3],
+                ),
             )
 
-
-def salvar_chamado(nome_banco, chamado):
-    chamado = normalizar_chamado(chamado)
-
-    def rodar(conexao):
-        cursor = conexao.cursor()
-        _salvar_chamado(cursor, chamado)
         cursor.close()
 
-    transacao(nome_banco, rodar)
-    return chamado
+    executar_transacao(nome_banco, transacao)
+    return chamado_normalizado
 
 
 def excluir_chamado(nome_banco, id_chamado):
-    executar(nome_banco, "DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
+    executar_write(nome_banco, "DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
 
 
-def login(nome_banco, usuario, senha):
-    registro = consultar(nome_banco, "SELECT usuario, senha, tipo FROM usuarios WHERE usuario = %s LIMIT 1", (usuario,), unico=True)
-    return registro if registro and registro["senha"] == senha else None
+def autenticar_usuario(nome_banco, usuario, senha):
+    registro = executar_select(
+        nome_banco,
+        "SELECT usuario, senha, tipo FROM usuarios WHERE usuario = %s LIMIT 1",
+        (usuario,),
+        fetch_one=True,
+    )
+    if not registro or registro["senha"] != senha:
+        return None
+    return registro
+
+
+@app.errorhandler(MySQLdb.MySQLError)
+def tratar_erro_mysql(erro):
+    return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
 
 
 @app.route("/api/projetos", methods=["GET"])
-async def api_projetos():
+async def api_projetos_listar():
     try:
-        return resposta({"projetos": await em_thread(listar_bancos), "padrao": DB_PADRAO})
+        projetos = await executar_em_thread(listar_bancos_disponiveis)
+        return responder_json({"projetos": projetos, "padrao": "teste"})
     except RuntimeError as erro:
-        return resposta({"ok": False, "erro": str(erro)}, 500)
+        return responder_json({"ok": False, "erro": str(erro)}, 500)
 
 
-@app.route("/api/clientes", methods=["GET", "PUT", "POST"])
-async def api_clientes():
+@app.route("/api/clientes", methods=["GET"])
+async def api_clientes_listar():
     try:
-        if request.method == "GET":
-            return resposta(await em_thread(listar_clientes, DB_PADRAO))
-        if request.method == "PUT":
-            await em_thread(salvar_clientes, DB_PADRAO, request.json or [])
-            return resposta({"ok": True})
-        await em_thread(criar_cliente, DB_PADRAO, request.json or {})
-        return resposta({"ok": True}, 201)
+        nome_banco = "teste"
+        clientes = await executar_em_thread(listar_clientes, nome_banco)
+        return responder_json(clientes)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/clientes", methods=["PUT"])
+async def api_clientes_substituir():
+    try:
+        nome_banco = "teste"
+        clientes = request.json or []
+        await executar_em_thread(substituir_clientes, nome_banco, clientes)
+        return responder_json({"ok": True})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/clientes", methods=["POST"])
+async def api_cliente_inserir():
+    try:
+        nome_banco = "teste"
+        await executar_em_thread(inserir_cliente, nome_banco, request.json or {})
+        return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
-        return resposta({"ok": False, "erro": str(erro)}, 400)
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
-@app.route("/api/chamados", methods=["GET", "PUT", "POST"])
-async def api_chamados():
+@app.route("/api/chamados", methods=["GET"])
+async def api_chamados_listar():
     try:
-        if request.method == "GET":
-            return resposta(await em_thread(listar_chamados, DB_PADRAO, inteiro(request.args.get("limit"), 50, 1, 200), inteiro(request.args.get("offset"), 0, 0, 1000000)))
-        if request.method == "PUT":
-            await em_thread(salvar_lista_chamados, DB_PADRAO, request.json or [])
-            return resposta({"ok": True})
-        return resposta({"ok": True, "chamado": await em_thread(salvar_chamado, DB_PADRAO, request.json or {})}, 201)
+        nome_banco = "teste"
+        limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
+        offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
+        chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
+        return responder_json(chamados)
     except (ValueError, RuntimeError) as erro:
-        return resposta({"ok": False, "erro": str(erro)}, 400)
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
-@app.route("/api/chamados/<id_chamado>", methods=["GET", "PUT", "DELETE"])
-async def api_chamado(id_chamado):
+@app.route("/api/chamados/<id_chamado>", methods=["GET"])
+async def api_chamado_detalhar(id_chamado):
     try:
-        if request.method == "GET":
-            chamado = await em_thread(detalhe_chamado, DB_PADRAO, id_chamado)
-            return resposta(chamado) if chamado else resposta({"ok": False, "erro": "Chamado não encontrado."}, 404)
-        if request.method == "PUT":
-            dados = request.json or {}
-            dados["id"] = dados.get("id") or id_chamado
-            await em_thread(salvar_chamado, DB_PADRAO, dados)
-            return resposta({"ok": True})
-        await em_thread(excluir_chamado, DB_PADRAO, id_chamado)
-        return resposta({"ok": True})
+        nome_banco = "teste"
+        chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado)
+        if not chamado:
+            return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
+        return responder_json(chamado)
     except (ValueError, RuntimeError) as erro:
-        return resposta({"ok": False, "erro": str(erro)}, 400)
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/chamados", methods=["PUT"])
+async def api_chamados_substituir():
+    try:
+        nome_banco = "teste"
+        await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
+        return responder_json({"ok": True})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/chamados", methods=["POST"])
+async def api_chamado_inserir():
+    try:
+        nome_banco = "teste"
+        chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
+        return responder_json({"ok": True, "chamado": chamado_salvo}, 201)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/chamados/<id_chamado>", methods=["PUT"])
+async def api_chamado_atualizar(id_chamado):
+    try:
+        nome_banco = "teste"
+        chamado = request.json or {}
+        if not chamado.get("id"):
+            chamado["id"] = id_chamado
+        await executar_em_thread(salvar_chamado_individual, nome_banco, chamado)
+        return responder_json({"ok": True})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/chamados/<id_chamado>", methods=["DELETE"])
+async def api_chamado_remover(id_chamado):
+    try:
+        nome_banco = "teste"
+        await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
+        return responder_json({"ok": True})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 @app.route("/api/login", methods=["POST"])
 async def api_login():
     dados = request.json or {}
-    nome_banco = dados.get("banco") or DB_PADRAO
     usuario = (dados.get("usuario") or "").strip()
     senha = (dados.get("senha") or "").strip()
 
     try:
-        if not await em_thread(banco_valido, nome_banco):
+        nome_banco = dados.get("banco") or "teste"
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
+        if not valido:
             raise ValueError("Nome de banco inválido.")
-        autenticado = await em_thread(login, nome_banco, usuario, senha)
     except (ValueError, RuntimeError) as erro:
-        return resposta({"ok": False, "erro": str(erro)}, 400)
-    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
-        return resposta({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+    try:
+        autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
+    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
+        return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
     if not autenticado:
-        return resposta({"ok": False, "erro": "Credenciais inválidas."}, 401)
+        return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 
     tipo = autenticado["tipo"]
-    return resposta({
-        "ok": True,
-        "usuario": usuario,
-        "tipo": tipo,
-        "clienteId": autenticado["usuario"] if tipo == "Cliente" else "",
-        "redirect": "admin.html" if tipo == "Administrador" else ("index.html" if tipo == "Técnico" else "cliente.html"),
-        "banco": nome_banco,
-    })
+    redirect = "admin.html" if tipo == "Administrador" else ("index.html" if tipo == "Técnico" else "cliente.html")
+    cliente_id = autenticado["usuario"] if tipo == "Cliente" else ""
+    return responder_json(
+        {
+            "ok": True,
+            "usuario": usuario,
+            "tipo": tipo,
+            "clienteId": cliente_id,
+            "redirect": redirect,
+            "banco": nome_banco,
+        }
+    )
 
 
 if __name__ == "__main__":
