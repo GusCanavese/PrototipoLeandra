@@ -4,6 +4,7 @@ const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
+const CHAVE_CACHE_CLIENTES = "cacheClientes";
 const CACHE_CHAMADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
@@ -17,10 +18,6 @@ let promessaCarregamentoChamados = null;
 let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
-
-function obterBancoProjetoAtual() {
-  return (bancoProjetoAtivo || "teste").trim() || "teste";
-}
 
 function definirBancoProjetoAtivo(nomeBanco) {
   bancoProjetoAtivo = (nomeBanco || "teste").trim();
@@ -107,7 +104,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
         const resposta = await fetch(`${baseUrl}${caminho}`, {
           headers: {
             "Content-Type": "application/json",
-            ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtual() } : {}),
+            ...(incluirBancoNoHeader ? { "X-Project-DB": bancoProjetoAtivo } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
@@ -159,10 +156,22 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
   }
 }
 
-function lerCacheChamados() {
+function resumirChamadoParaLista(chamado) {
+  return {
+    id: chamado.id,
+    client: chamado.client,
+    clienteLogin: chamado.clienteLogin,
+    summary: chamado.summary,
+    priority: chamado.priority,
+    status: chamado.status,
+    openedAt: chamado.openedAt,
+    lastUpdate: chamado.lastUpdate,
+  };
+}
+
+function lerCache(chave) {
   try {
-    const bruto = sessionStorage.getItem(CHAVE_CACHE_CHAMADOS);
-    console.log("Cache bruto lido: ", bruto)
+    const bruto = sessionStorage.getItem(chave);
     if (!bruto) return null;
     const cache = JSON.parse(bruto);
     if (!cache?.timestamp || !Array.isArray(cache?.dados)) return null;
@@ -172,42 +181,102 @@ function lerCacheChamados() {
   }
 }
 
-console.log("chamados-> ", chamados)
+function escreverCache(chave, dados) {
+  sessionStorage.setItem(chave, JSON.stringify({
+    timestamp: Date.now(),
+    banco: bancoProjetoAtivo,
+    dados,
+  }));
+}
+
+function lerCacheChamados() {
+  return lerCache(CHAVE_CACHE_CHAMADOS);
+}
 
 function escreverCacheChamados(dados = chamados) {
-console.log("chamados-> ", chamados)
-
-  sessionStorage.setItem(CHAVE_CACHE_CHAMADOS, JSON.stringify({ timestamp: Date.now(), banco: obterBancoProjetoAtual(), dados }));
+  escreverCache(CHAVE_CACHE_CHAMADOS, (dados || []).map(resumirChamadoParaLista));
 }
 
 function invalidarCacheChamados() {
   sessionStorage.removeItem(CHAVE_CACHE_CHAMADOS);
 }
 
+function lerCacheClientes() {
+  return lerCache(CHAVE_CACHE_CLIENTES);
+}
+
+function escreverCacheClientes(dados = clientes) {
+  escreverCache(CHAVE_CACHE_CLIENTES, dados || []);
+}
+
+function invalidarCacheClientes() {
+  sessionStorage.removeItem(CHAVE_CACHE_CLIENTES);
+}
+
+function cacheEhValido(cache) {
+  return Boolean(cache && cache.banco === bancoProjetoAtivo && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS);
+}
+
+async function validarCacheChamadosComBanco(cache) {
+  const referencias = (cache?.dados || []).map((chamado) => ({
+    id: chamado.id,
+    lastUpdate: chamado.lastUpdate,
+  })).filter((chamado) => chamado.id);
+
+  if (!referencias.length) return { precisaAtualizar: false, validacoes: {} };
+
+  const resposta = await requisicaoApi('/chamados/validar-cache', {
+    method: 'POST',
+    body: JSON.stringify({ chamados: referencias }),
+  });
+
+  const validacoes = resposta?.validacoes || {};
+  const precisaAtualizar = Object.values(validacoes).some((item) => item?.needsRefresh);
+  return { precisaAtualizar, validacoes };
+}
+
+function atualizarChamadoEmMemoria(chamadoAtualizado) {
+  const indice = chamados.findIndex((chamado) => chamado.id === chamadoAtualizado.id);
+  const resumoAtualizado = resumirChamadoParaLista(chamadoAtualizado);
+  if (indice >= 0) {
+    chamados.splice(indice, 1, { ...chamados[indice], ...resumoAtualizado });
+  } else {
+    chamados.unshift(resumoAtualizado);
+  }
+}
+
+function removerChamadoEmMemoria(idChamado) {
+  chamados = chamados.filter((chamado) => chamado.id !== idChamado);
+}
+
 async function carregarChamadosSalvos(opcoes = {}) {
   promessaCarregamentoChamados = (async () => {
-  const { usarCache = true, revalidar = true } = opcoes;
-  const cache = usarCache ? lerCacheChamados() : null;
-  console.log("chacheSendoLido -> ",lerCacheChamados())
-  const cacheValido = cache && cache.banco === obterBancoProjetoAtual() && Date.now() - cache.timestamp < CACHE_CHAMADOS_TTL_MS;
-  console.log("cache válido? -> ", cacheValido)
+    const { usarCache = true, revalidar = true } = opcoes;
+    const cache = usarCache ? lerCacheChamados() : null;
 
-  if (cacheValido) {
-    chamados = cache.dados;
-    console.log("chamados do cache: ", chamados);
-    if (revalidar) {
-      requisicaoApi("/chamados").then((dadosAtualizados) => {
-          chamados = dadosAtualizados || [];
-          console.log("chamados pós revalidação: ", chamados);
-          escreverCacheChamados(chamados);
-          atualizarTelaComChamadosAtualizados();
-        }).catch(() => {});
+    if (cacheEhValido(cache)) {
+      chamados = cache.dados;
+      if (revalidar) {
+        validarCacheChamadosComBanco(cache).then(({ precisaAtualizar }) => {
+          if (!precisaAtualizar) return;
+          return requisicaoApi("/chamados?limit=200").then((dadosAtualizados) => {
+            chamados = dadosAtualizados || [];
+            escreverCacheChamados(chamados);
+            atualizarTelaComChamadosAtualizados();
+          });
+        }).catch(() => {
+          requisicaoApi("/chamados?limit=200").then((dadosAtualizados) => {
+            chamados = dadosAtualizados || [];
+            escreverCacheChamados(chamados);
+            atualizarTelaComChamadosAtualizados();
+          }).catch(() => {});
+        });
+      }
+      return;
     }
-    return;
-  }
 
-  chamados = await requisicaoApi("/chamados");
-  escreverCacheChamados(chamados);
+    chamados = await requisicaoApi("/chamados?limit=200");
+    escreverCacheChamados(chamados);
   })();
 
   try {
@@ -222,8 +291,23 @@ async function carregarDetalheChamado(idChamado) {
   return requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`);
 }
 
-async function carregarClientesSalvos() {
+async function carregarClientesSalvos(opcoes = {}) {
+  const { usarCache = true, revalidar = true } = opcoes;
+  const cache = usarCache ? lerCacheClientes() : null;
+
+  if (cacheEhValido(cache)) {
+    clientes = cache.dados;
+    if (revalidar) {
+      requisicaoApi("/clientes").then((dadosAtualizados) => {
+        clientes = dadosAtualizados || [];
+        escreverCacheClientes(clientes);
+      }).catch(() => {});
+    }
+    return;
+  }
+
   clientes = await requisicaoApi("/clientes");
+  escreverCacheClientes(clientes);
 }
 
 async function salvarClientes() {
@@ -231,6 +315,7 @@ async function salvarClientes() {
     method: "PUT",
     body: JSON.stringify(clientes),
   });
+  escreverCacheClientes(clientes);
 }
 
 async function salvarClienteIndividual(cliente) {
@@ -238,6 +323,7 @@ async function salvarClienteIndividual(cliente) {
     method: "POST",
     body: JSON.stringify(cliente),
   });
+  escreverCacheClientes(clientes);
 }
 
 function obterClientePorLogin(login) {
@@ -288,8 +374,9 @@ async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = tr
     }
   }
 
+  chamados = (chamadosAtualizados || []).map(resumirChamadoParaLista);
+  escreverCacheChamados(chamados);
   if (atualizarTela) atualizarTelaComChamadosAtualizados();
-  invalidarCacheChamados();
   notificarAtualizacaoChamados();
 }
 
@@ -306,7 +393,8 @@ async function salvarChamadoIndividual(chamado) {
     method: "PUT",
     body: JSON.stringify(chamado),
   });
-  invalidarCacheChamados();
+  atualizarChamadoEmMemoria(chamado);
+  escreverCacheChamados(chamados);
   notificarAtualizacaoChamados();
 }
 
@@ -314,7 +402,8 @@ async function excluirChamadoIndividual(idChamado) {
   await requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`, {
     method: "DELETE",
   });
-  invalidarCacheChamados();
+  removerChamadoEmMemoria(idChamado);
+  escreverCacheChamados(chamados);
   notificarAtualizacaoChamados();
 }
 
@@ -719,7 +808,8 @@ function registrarFormularioCriacao() {
         body: JSON.stringify(novoChamado),
       });
       if (respostaCriacao?.chamado?.id) novoChamado.id = respostaCriacao.chamado.id;
-      invalidarCacheChamados();
+      atualizarChamadoEmMemoria(novoChamado);
+      escreverCacheChamados(chamados);
       notificarAtualizacaoChamados();
     } catch (erro) {
       if (alertaCriacao) {
@@ -768,6 +858,7 @@ function registrarFormularioCadastroCliente() {
     try {
       clientes.push(novoCliente);
       await salvarClienteIndividual(novoCliente);
+      escreverCacheClientes(clientes);
     } catch (erro) {
       if (alerta) {
         alerta.className = "alert alert-danger";
@@ -876,7 +967,7 @@ async function configurarTelaLogin() {
       seletorProjeto.innerHTML = (dadosProjetos.projetos || [])
         .map((projeto) => `<option value="${projeto}">${projeto}</option>`)
         .join("");
-      seletorProjeto.value = obterBancoProjetoAtual();
+      seletorProjeto.value = bancoProjetoAtivo;
       seletorProjeto.addEventListener("change", () => definirBancoProjetoAtivo(seletorProjeto.value));
     }
   } catch {
@@ -893,7 +984,7 @@ async function configurarTelaLogin() {
     try {
       const autenticacao = await requisicaoApi("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario, senha, banco: obterBancoProjetoAtual()}),
+        body: JSON.stringify({ usuario, senha, banco: bancoProjetoAtivo}),
       });
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
@@ -919,7 +1010,7 @@ async function configurarPainelAdministrador() {
   const atual = document.getElementById("banco-atual-admin");
   if (!containerLista || !atual) return;
 
-  atual.textContent = obterBancoProjetoAtual();
+  atual.textContent = bancoProjetoAtivo;
   const dados = await carregarProjetosDisponiveis();
   const projetos = dados.projetos || [];
 
@@ -990,7 +1081,7 @@ async function inicializar() {
     try {
       await Promise.all([carregarChamadosSalvos(), carregarClientesSalvos()]);
     } catch {
-      alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtual()}'. Verifique o backend Python.`);
+      alert(`Não foi possível carregar dados do banco '${bancoProjetoAtivo}'. Verifique o backend Python.`);
       return;
     }
   }
