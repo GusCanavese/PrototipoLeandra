@@ -164,7 +164,6 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
 function lerCacheChamados() {
   try {
     const bruto = sessionStorage.getItem(CHAVE_CACHE_CHAMADOS);
-    console.log("Cache bruto lido: ", bruto)
     if (!bruto) return null;
     const cache = JSON.parse(bruto);
     if (!cache?.timestamp || !Array.isArray(cache?.dados)) return null;
@@ -174,10 +173,8 @@ function lerCacheChamados() {
   }
 }
 
-console.log("chamados-> ", chamados)
 
 function escreverCacheChamados(dados = chamados) {
-console.log("chamados-> ", chamados)
 
   escreverCacheSessao(CHAVE_CACHE_CHAMADOS, dados);
 }
@@ -196,17 +193,13 @@ async function carregarChamadosSalvos(opcoes = {}) {
   promessaCarregamentoChamados = (async () => {
   const { usarCache = true, revalidar = true } = opcoes;
   const cache = usarCache ? lerCacheChamados() : null;
-  console.log("chacheSendoLido -> ",lerCacheChamados())
   const cacheValido = cache && cache.banco === obterBancoProjetoAtual() && Date.now() - cache.timestamp < CACHE_DADOS_TTL_MS;
-  console.log("cache válido? -> ", cacheValido)
 
   if (cacheValido) {
     chamados = cache.dados;
-    console.log("chamados do cache: ", chamados);
     if (revalidar) {
       requisicaoApi("/chamados").then((dadosAtualizados) => {
           chamados = dadosAtualizados || [];
-          console.log("chamados pós revalidação: ", chamados);
           escreverCacheChamados(chamados);
           atualizarTelaComChamadosAtualizados();
         }).catch(() => {});
@@ -407,7 +400,6 @@ function createPriorityBadge(priority) {
 
 function renderChamadosTabela() {
   const corpoTabela = document.getElementById("lista-chamados");
-  console.log(corpoTabela)
   if (!corpoTabela) return;
   corpoTabela.innerHTML = "";
 
