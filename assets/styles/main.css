@@ -235,3 +235,8 @@ footer {
     transform: rotate(360deg);
   }
 }
+
+.financeiro-badge-neutro {
+  background-color: #eef2f7;
+  color: #52606d;
+}

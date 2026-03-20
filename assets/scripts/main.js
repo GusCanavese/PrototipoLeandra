@@ -10,7 +10,7 @@ const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
 const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
-const credenciaisLogin = {tecnico: { senha: "tecnico123", tipo: "Técnico", redirect: "index.html" },};
+const credenciaisLogin = {};
 
 let chamados = [];
 let clientes = [];
@@ -20,6 +20,49 @@ let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
+
+
+function normalizarTipoUsuario(tipo) {
+  if (tipo === "Técnico") return "Advogado";
+  return tipo || "";
+}
+
+function usuarioEhAdministrador() {
+  return normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Administrador";
+}
+
+function usuarioEhPerfilInterno(tipo = usuarioAutenticado?.tipo) {
+  return ["Advogado", "Administrador"].includes(normalizarTipoUsuario(tipo));
+}
+
+function usuarioPodeCadastrarUsuarios() {
+  return usuarioEhPerfilInterno();
+}
+
+function usuarioPodeCriarTipoUsuario(tipo) {
+  const tipoNormalizado = normalizarTipoUsuario(tipo);
+  if (tipoNormalizado === "Advogado") return usuarioEhAdministrador();
+  return usuarioPodeCadastrarUsuarios();
+}
+
+function obterRotuloTipoCadastro() {
+  return usuarioEhAdministrador() ? "Cliente ou advogado" : "Cliente";
+}
+
+function configurarAlternadoresSenha() {
+  document.querySelectorAll("[data-toggle-password]").forEach((botao) => {
+    botao.addEventListener("click", () => {
+      const seletor = botao.getAttribute("data-toggle-password");
+      const campo = seletor ? document.querySelector(seletor) : null;
+      if (!campo) return;
+      const exibindo = campo.type === "text";
+      campo.type = exibindo ? "password" : "text";
+      botao.setAttribute("aria-pressed", String(!exibindo));
+      botao.setAttribute("aria-label", exibindo ? "Mostrar senha" : "Ocultar senha");
+      botao.innerHTML = exibindo ? "👁" : "🙈";
+    });
+  });
+}
 
 function obterBancoProjetoAtual() {
   return (bancoProjetoAtivo || "teste").trim() || "teste";
@@ -97,6 +140,15 @@ function renderizarAnexosComDownload(anexos = []) {
       return `<a href="${anexo.content}" download="${anexo.name}">${anexo.name}</a>`;
     })
     .join(", ");
+}
+
+function escaparHtml(valor) {
+  return String(valor ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
@@ -374,6 +426,74 @@ function criarParcelasFinanceiras(totalParcelas, parcelasExistentes = []) {
   return Array.from({ length: quantidade }, (_, indice) => Boolean(parcelasExistentes[indice]));
 }
 
+function normalizarDataPagamento(valor) {
+  if (!valor) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(valor))) return String(valor);
+  const data = new Date(valor);
+  if (Number.isNaN(data.getTime())) return "";
+  const ano = data.getFullYear();
+  const mes = String(data.getMonth() + 1).padStart(2, "0");
+  const dia = String(data.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+
+function adicionarMesesDataPagamento(dataBase, quantidadeMeses) {
+  const dataNormalizada = normalizarDataPagamento(dataBase);
+  if (!dataNormalizada) return "";
+  const [ano, mes, dia] = dataNormalizada.split("-").map(Number);
+  const data = new Date(ano, mes - 1, dia);
+  data.setMonth(data.getMonth() + quantidadeMeses);
+  const novoAno = data.getFullYear();
+  const novoMes = String(data.getMonth() + 1).padStart(2, "0");
+  const novoDia = String(data.getDate()).padStart(2, "0");
+  return `${novoAno}-${novoMes}-${novoDia}`;
+}
+
+function criarDatasParcelas(totalParcelas, datasExistentes = [], primeiraData = "") {
+  const quantidade = Math.max(1, parseInt(totalParcelas, 10) || 1);
+  const datasNormalizadas = Array.isArray(datasExistentes)
+    ? datasExistentes.map((data) => normalizarDataPagamento(data))
+    : [];
+  const primeiraDataNormalizada = normalizarDataPagamento(primeiraData) || datasNormalizadas[0] || "";
+
+  return Array.from({ length: quantidade }, (_, indice) => {
+    if (datasNormalizadas[indice]) return datasNormalizadas[indice];
+    if (!primeiraDataNormalizada) return "";
+    return adicionarMesesDataPagamento(primeiraDataNormalizada, indice);
+  });
+}
+
+function formatarDataPagamento(valor) {
+  const dataNormalizada = normalizarDataPagamento(valor);
+  if (!dataNormalizada) return "Sem data";
+  const [ano, mes, dia] = dataNormalizada.split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+function parcelaEstaVencida(dataPagamento, paga) {
+  if (paga) return false;
+  const dataNormalizada = normalizarDataPagamento(dataPagamento);
+  if (!dataNormalizada) return false;
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const [ano, mes, dia] = dataNormalizada.split("-").map(Number);
+  const vencimento = new Date(ano, mes - 1, dia);
+  vencimento.setHours(0, 0, 0, 0);
+  return vencimento < hoje;
+}
+
+function obterClasseStatusParcela(dataPagamento, paga) {
+  if (paga) return "financeiro-badge-pago";
+  if (parcelaEstaVencida(dataPagamento, paga)) return "financeiro-badge-pendente";
+  return "financeiro-badge-neutro";
+}
+
+function obterTextoStatusParcela(dataPagamento, paga) {
+  if (paga) return "Paga";
+  if (parcelaEstaVencida(dataPagamento, paga)) return "Vencida";
+  return "Agendada";
+}
+
 function normalizarItemFinanceiro(item = {}, indice = 0) {
   const totalParcelas = Math.max(1, parseInt(item.installments ?? item.parcelas, 10) || 1);
   const valor = Number(item.value ?? item.valor ?? 0);
@@ -384,6 +504,7 @@ function normalizarItemFinanceiro(item = {}, indice = 0) {
     installments: totalParcelas,
     description: String(item.description ?? item.descricao ?? "").trim(),
     paidInstallments: criarParcelasFinanceiras(totalParcelas, item.paidInstallments ?? item.parcelasPagas ?? []),
+    installmentDates: criarDatasParcelas(totalParcelas, item.installmentDates ?? item.datasParcelas ?? [], item.firstInstallmentDate ?? item.dataPrimeiraParcela ?? ""),
   };
 }
 
@@ -432,7 +553,34 @@ function obterColecaoFinanceira(chamado, tipo) {
 }
 
 function usuarioPodeGerenciarFinanceiro() {
-  return ["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo);
+  return usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
+}
+
+function obterRotuloEscopoFinanceiro(tipo) {
+  return tipo === "escritorio" ? "Pago pelo Escritório" : "Pago pelo Cliente";
+}
+
+function obterMensagemEventoFinanceiro(acao) {
+  if (acao === "update") return "Registro financeiro atualizado.";
+  if (acao === "delete") return "Registro financeiro removido.";
+  return "Registro financeiro adicionado.";
+}
+
+function criarAtualizacaoFinanceira(tipo, item, acao = "create") {
+  if (!item) return null;
+  return {
+    author: "Sistema",
+    message: obterMensagemEventoFinanceiro(acao),
+    date: formatarDataHoraAtual(),
+    attachments: [],
+    financialEvent: {
+      action: acao,
+      scope: tipo,
+      product: item.product || "",
+      value: Number(item.value) || 0,
+      installments: Math.max(1, Number(item.installments) || 1),
+    },
+  };
 }
 
 function obterResumoParcelas(item) {
@@ -454,9 +602,10 @@ function abrirModalListaFinanceira(chamado, tipo) {
         .map((item) => {
           const parcelasHtml = (item.paidInstallments || [])
             .map((paga, indice) => {
-              const classe = paga ? "financeiro-badge-pago" : "financeiro-badge-pendente";
-              const texto = paga ? "Paga" : "Pendente";
-              return `<span class="badge ${classe} me-2 mb-2">Parcela ${indice + 1}: ${texto}</span>`;
+              const dataParcela = item.installmentDates?.[indice] || "";
+              const classe = obterClasseStatusParcela(dataParcela, paga);
+              const texto = obterTextoStatusParcela(dataParcela, paga);
+              return `<span class="badge ${classe} me-2 mb-2">Parcela ${indice + 1} - ${formatarDataPagamento(dataParcela)}: ${texto}</span>`;
             })
             .join("");
           return `
@@ -566,8 +715,9 @@ function configurarPainelFinanceiro(chamado) {
 
     selecoes[tipo].parcelaIndice = parcelaIndiceAtual;
     elementos.parcela.innerHTML = Array.from({ length: itemSelecionado.installments }, (_, indice) => {
-      const status = itemSelecionado.paidInstallments?.[indice] ? "paga" : "pendente";
-      return `<option value="${indice}">Parcela ${indice + 1} (${status})</option>`;
+      const dataParcela = itemSelecionado.installmentDates?.[indice] || "";
+      const status = obterTextoStatusParcela(dataParcela, itemSelecionado.paidInstallments?.[indice]).toLowerCase();
+      return `<option value="${indice}">Parcela ${indice + 1} - ${formatarDataPagamento(dataParcela)} (${status})</option>`;
     }).join("");
     elementos.parcela.disabled = !podeGerenciarFinanceiro;
     elementos.parcela.value = parcelaIndiceAtual;
@@ -722,6 +872,7 @@ function configurarPainelFinanceiro(chamado) {
 
     let item = itemExistente;
     let snapshotAnterior = null;
+    let atualizacaoFinanceira = null;
 
     if (itemExistente) {
       snapshotAnterior = {
@@ -730,12 +881,15 @@ function configurarPainelFinanceiro(chamado) {
         installments: itemExistente.installments,
         description: itemExistente.description,
         paidInstallments: [...(itemExistente.paidInstallments || [])],
+        installmentDates: [...(itemExistente.installmentDates || [])],
       };
       itemExistente.product = produto;
       itemExistente.value = valor;
       itemExistente.installments = parcelas;
       itemExistente.description = descricao;
       itemExistente.paidInstallments = criarParcelasFinanceiras(parcelas, itemExistente.paidInstallments);
+      itemExistente.installmentDates = criarDatasParcelas(parcelas, itemExistente.installmentDates);
+      atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, itemExistente, "update");
     } else {
       item = normalizarItemFinanceiro({
         id: `financeiro-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -744,22 +898,30 @@ function configurarPainelFinanceiro(chamado) {
         installments: parcelas,
         description: descricao,
         paidInstallments: Array.from({ length: parcelas }, () => false),
+        installmentDates: criarDatasParcelas(parcelas),
       });
       colecao.push(item);
+      atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, item, "create");
     }
 
     selecoes[tipoModalAtual].produtoId = item.id;
     selecoes[tipoModalAtual].parcelaIndice = "0";
+    if (atualizacaoFinanceira) {
+      chamado.updates = chamado.updates || [];
+      chamado.updates.unshift(atualizacaoFinanceira);
+    }
 
     try {
       await persistirFinanceiro();
     } catch (erro) {
+      if (atualizacaoFinanceira) chamado.updates.shift();
       if (itemExistente && snapshotAnterior) {
         itemExistente.product = snapshotAnterior.product;
         itemExistente.value = snapshotAnterior.value;
         itemExistente.installments = snapshotAnterior.installments;
         itemExistente.description = snapshotAnterior.description;
         itemExistente.paidInstallments = snapshotAnterior.paidInstallments;
+        itemExistente.installmentDates = snapshotAnterior.installmentDates;
       } else {
         const indice = colecao.findIndex((registro) => registro.id === item.id);
         if (indice >= 0) colecao.splice(indice, 1);
@@ -785,12 +947,18 @@ function configurarPainelFinanceiro(chamado) {
 
       const [itemRemovido] = colecao.splice(indice, 1);
       const proximoItem = colecao[0] || null;
+      const atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, itemRemovido, "delete");
       selecoes[tipoModalAtual].produtoId = proximoItem?.id || "";
       selecoes[tipoModalAtual].parcelaIndice = proximoItem ? "0" : "";
+      if (atualizacaoFinanceira) {
+        chamado.updates = chamado.updates || [];
+        chamado.updates.unshift(atualizacaoFinanceira);
+      }
 
       try {
         await persistirFinanceiro();
       } catch (erro) {
+        if (atualizacaoFinanceira) chamado.updates.shift();
         colecao.splice(indice, 0, itemRemovido);
         selecoes[tipoModalAtual].produtoId = itemRemovido.id;
         selecoes[tipoModalAtual].parcelaIndice = "0";
@@ -815,8 +983,8 @@ function obterUsuarioSalvo() {
 }
 
 function salvarUsuarioAutenticado(usuario) {
-  usuarioAutenticado = usuario;
-  localStorage.setItem(CHAVE_STORAGE_LOGIN, JSON.stringify(usuario));
+  usuarioAutenticado = { ...usuario, tipo: normalizarTipoUsuario(usuario?.tipo) };
+  localStorage.setItem(CHAVE_STORAGE_LOGIN, JSON.stringify(usuarioAutenticado));
 }
 
 function limparAutenticacao() {
@@ -825,7 +993,10 @@ function limparAutenticacao() {
 }
 
 function definirUsuarioAutenticadoSeSalvo() {
-  if (!usuarioAutenticado) usuarioAutenticado = obterUsuarioSalvo();
+  if (!usuarioAutenticado) {
+    const salvo = obterUsuarioSalvo();
+    if (salvo) usuarioAutenticado = { ...salvo, tipo: normalizarTipoUsuario(salvo.tipo) };
+  }
 }
 
 function createPriorityBadge(priority) {
@@ -956,7 +1127,12 @@ function preencherHistorico(chamado) {
   if (!listaHistorico) return;
   listaHistorico.innerHTML = "";
 
-  chamado.updates.forEach((u) => {
+  const atualizacoesVisiveis = (chamado.updates || []).filter((u) => {
+    if (usuarioAutenticado?.tipo !== "Cliente") return true;
+    return u?.financialEvent?.scope !== "escritorio";
+  });
+
+  atualizacoesVisiveis.forEach((u) => {
     const anexos = (u.attachments || []).length
       ? `<div class="small mt-2"><strong>Anexos:</strong> ${renderizarAnexosComDownload(u.attachments || [])}</div>`
       : "";
@@ -965,6 +1141,140 @@ function preencherHistorico(chamado) {
     item.innerHTML = `<div class="d-flex justify-content-between"><strong>${u.author}</strong><span class="small text-muted">${u.date}</span></div><p class="mb-1">${u.message}</p>${anexos}`;
     listaHistorico.appendChild(item);
   });
+}
+
+function configurarImpressaoHistorico(chamado) {
+  const botaoImprimir = document.getElementById("btn-imprimir-historico");
+  if (!botaoImprimir) return;
+
+  const podeImprimir = usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
+  botaoImprimir.classList.toggle("d-none", !podeImprimir);
+  if (!podeImprimir) {
+    botaoImprimir.onclick = null;
+    return;
+  }
+
+  botaoImprimir.onclick = () => {
+    const ultimasAtualizacoes = (chamado.updates || []).slice(0, 10);
+    const itensHistorico = ultimasAtualizacoes.length
+      ? ultimasAtualizacoes
+          .map((atualizacao, indice) => {
+            const anexos = (atualizacao.attachments || [])
+              .map(normalizarAnexo)
+              .filter(Boolean);
+            const eventoFinanceiro = atualizacao.financialEvent;
+            const anexosHtml = anexos.length
+              ? `
+                <div class="anexos">
+                  <strong>Anexos:</strong> ${anexos.map((anexo) => escaparHtml(anexo.name)).join(", ")}
+                </div>
+              `
+              : "";
+            const financeiroHtml = eventoFinanceiro
+              ? `
+                <div class="anexos">
+                  <strong>Registro financeiro:</strong> ${escaparHtml(obterRotuloEscopoFinanceiro(eventoFinanceiro.scope || "cliente"))}<br />
+                  <strong>Produto:</strong> ${escaparHtml(eventoFinanceiro.product || "-")}<br />
+                  <strong>Valor:</strong> ${escaparHtml(formatarMoeda(eventoFinanceiro.value || 0))}<br />
+                  <strong>Parcelas:</strong> ${escaparHtml(String(eventoFinanceiro.installments || 1))}
+                </div>
+              `
+              : "";
+
+            return `
+              <section class="item">
+                <div class="item-topo">
+                  <strong>${escaparHtml(atualizacao.author || "Sistema")}</strong>
+                  <span>${escaparHtml(atualizacao.date || "-")}</span>
+                </div>
+                <div>${escaparHtml(atualizacao.message || "")}</div>
+                ${anexosHtml}
+                ${financeiroHtml}
+                <small>Atualização ${indice + 1}</small>
+              </section>
+            `;
+          })
+          .join("")
+      : '<p>Nenhuma atualização registrada.</p>';
+
+    const janelaImpressao = window.open("", "_blank", "width=900,height=700");
+    if (!janelaImpressao) {
+      alert("Não foi possível abrir a janela de impressão.");
+      return;
+    }
+
+    const htmlRelatorio = `
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8" />
+          <title>Relatório do Chamado ${escaparHtml(chamado.id || "")}</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              color: #1f2937;
+              margin: 32px;
+              line-height: 1.5;
+            }
+            h1, h2, p {
+              margin: 0 0 12px;
+            }
+            .meta {
+              margin-bottom: 24px;
+            }
+            .item {
+              border: 1px solid #d1d5db;
+              border-radius: 8px;
+              padding: 12px 14px;
+              margin-bottom: 12px;
+              page-break-inside: avoid;
+            }
+            .item-topo {
+              display: flex;
+              justify-content: space-between;
+              gap: 12px;
+              margin-bottom: 8px;
+              font-size: 14px;
+            }
+            small {
+              display: block;
+              margin-top: 10px;
+              color: #6b7280;
+            }
+            .anexos {
+              margin-top: 10px;
+              font-size: 14px;
+            }
+            @media print {
+              body {
+                margin: 18px;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Relatório de Atualizações</h1>
+          <div class="meta">
+            <p><strong>Chamado:</strong> ${escaparHtml(chamado.id || "-")}</p>
+            <p><strong>Cliente:</strong> ${escaparHtml(chamado.client || "-")}</p>
+            <p><strong>Resumo:</strong> ${escaparHtml(chamado.summary || "-")}</p>
+            <p><strong>Status:</strong> ${escaparHtml(chamado.status || "-")}</p>
+            <p><strong>Gerado em:</strong> ${escaparHtml(formatarDataHoraAtual())}</p>
+            <p><strong>Conteúdo:</strong> 10 últimas atualizações</p>
+          </div>
+          <h2>Histórico</h2>
+          ${itensHistorico}
+        </body>
+      </html>
+    `;
+    janelaImpressao.document.open();
+    janelaImpressao.document.write(htmlRelatorio);
+    janelaImpressao.document.close();
+    janelaImpressao.focus();
+    janelaImpressao.onload = () => {
+      janelaImpressao.print();
+    };
+  };
 }
 
 function preencherAnexos(chamado) {
@@ -997,7 +1307,7 @@ function registrarFormularioAtualizacao(chamado) {
     document.getElementById("statusAtualizacao").value = chamado.status;
   }
 
-  form.addEventListener("submit", async (evento) => {
+  form.onsubmit = async (evento) => {
     evento.preventDefault();
     const descricao = document.getElementById("descricaoAtualizacao").value.trim();
     if (!descricao) return;
@@ -1008,7 +1318,7 @@ function registrarFormularioAtualizacao(chamado) {
       ? [{ name: arquivo.name, content: await lerArquivoComoDataUrl(arquivo) }]
       : [];
     const nova = {
-      author: usuarioAutenticado?.tipo || "Técnico",
+      author: usuarioAutenticado?.tipo || "Advogado",
       message: descricao,
       date: formatarDataHoraAtual(),
       attachments: anexoSerializado,
@@ -1027,9 +1337,9 @@ function registrarFormularioAtualizacao(chamado) {
     preencherHistorico(chamado);
     preencherAnexos(chamado);
     form.reset();
-  });
+  };
 
-  btnConcluir?.addEventListener("click", async () => {
+  if (btnConcluir) btnConcluir.onclick = async () => {
     chamado.status = "Concluído";
     chamado.lastUpdate = formatarDataHoraAtual();
     try {
@@ -1040,17 +1350,17 @@ function registrarFormularioAtualizacao(chamado) {
     }
     preencherCabecalhoChamado(chamado);
     preencherHistorico(chamado);
-  });
+  };
 
-  btnExcluir?.addEventListener("click", async () => {
+  if (btnExcluir) btnExcluir.onclick = async () => {
     try {
       await excluirChamadoIndividual(chamado.id);
     } catch (erro) {
       alert(erro.message || "Não foi possível excluir o chamado.");
       return;
     }
-    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
-  });
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
+  };
 }
 
 function gerarNovoIdChamado() {
@@ -1078,6 +1388,7 @@ function registrarFormularioCriacao() {
   const campoLoginCliente = document.getElementById("campo-login-cliente");
   const campoValorInicial = document.getElementById("campo-valor-inicial");
   const campoParcelasIniciais = document.getElementById("campo-parcelas-iniciais");
+  const campoPrimeiraParcela = document.getElementById("campo-primeira-parcela");
   const alertaCriacao = document.getElementById("alerta-criacao");
   const botaoCadastrarCliente = document.getElementById("btn-cadastrar-cliente");
   const usuarioEhCliente = usuarioAutenticado?.tipo === "Cliente";
@@ -1149,7 +1460,7 @@ function registrarFormularioCriacao() {
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
-    const usuarioPodeCriar = ["Técnico", "Administrador", "Cliente"].includes(usuarioAutenticado?.tipo);
+    const usuarioPodeCriar = ["Advogado", "Administrador", "Cliente"].includes(normalizarTipoUsuario(usuarioAutenticado?.tipo));
     if (!usuarioPodeCriar) return;
 
     const dataAtual = new Date();
@@ -1160,6 +1471,7 @@ function registrarFormularioCriacao() {
     const parcelasIniciaisInformadas = campoParcelasIniciais?.value?.trim() || "";
     const valorInicial = valorInicialInformado === "" ? null : Number(campoValorInicial.value);
     const parcelasIniciais = parcelasIniciaisInformadas === "" ? null : parseInt(campoParcelasIniciais.value, 10);
+    const primeiraParcela = normalizarDataPagamento(campoPrimeiraParcela?.value || "");
 
     if ((valorInicialInformado && !parcelasIniciaisInformadas) || (!valorInicialInformado && parcelasIniciaisInformadas)) {
       if (alertaCriacao) {
@@ -1173,6 +1485,14 @@ function registrarFormularioCriacao() {
       if (alertaCriacao) {
         alertaCriacao.className = "alert alert-warning";
         alertaCriacao.textContent = "Informe um valor válido e pelo menos 1 parcela.";
+      }
+      return;
+    }
+
+    if (valorInicialInformado && !primeiraParcela) {
+      if (alertaCriacao) {
+        alertaCriacao.className = "alert alert-warning";
+        alertaCriacao.textContent = "Informe a data de pagamento da primeira parcela.";
       }
       return;
     }
@@ -1202,6 +1522,16 @@ function registrarFormularioCriacao() {
           message: descricao,
           date: dataFormatada,
           attachments: anexoInicial,
+          financialEvent: valorInicialInformado
+            ? {
+                action: "create",
+                scope: "cliente",
+                product: resumo,
+                value: valorInicial,
+                installments: parcelasIniciais,
+                firstInstallmentDate: primeiraParcela,
+              }
+            : null,
         },
       ],
       financialOffice: [],
@@ -1213,6 +1543,7 @@ function registrarFormularioCriacao() {
               installments: parcelasIniciais,
               description: descricao,
               paidInstallments: Array.from({ length: parcelasIniciais }, () => false),
+              installmentDates: criarDatasParcelas(parcelasIniciais, [], primeiraParcela),
             }),
           ]
         : [],
@@ -1249,7 +1580,7 @@ function registrarFormularioCriacao() {
       }
       return;
     }
-    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
   });
 }
 
@@ -1259,26 +1590,46 @@ function registrarFormularioCadastroCliente() {
 
   const alerta = document.getElementById("alerta-cadastro-cliente");
   const campoLogin = document.getElementById("campo-cadastro-login");
+  const campoTipo = document.getElementById("campo-cadastro-tipo");
+  const textoAjudaTipo = document.getElementById("texto-ajuda-tipo-cadastro");
   const loginPreenchido = new URLSearchParams(window.location.search).get("login");
   if (loginPreenchido) campoLogin.value = loginPreenchido;
+
+  if (campoTipo) {
+    const tiposPermitidos = [
+      { valor: "Cliente", label: "Cliente" },
+      ...(usuarioEhAdministrador() ? [{ valor: "Advogado", label: "Advogado" }] : []),
+    ];
+    campoTipo.innerHTML = tiposPermitidos
+      .map((tipo) => `<option value="${tipo.valor}">${tipo.label}</option>`)
+      .join("");
+  }
+  if (textoAjudaTipo) textoAjudaTipo.textContent = `Perfis disponíveis: ${obterRotuloTipoCadastro()}.`;
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
 
-    const novoCliente = {
+    const tipoSelecionado = normalizarTipoUsuario(campoTipo?.value || "Cliente");
+    const novoUsuario = {
       nomeCompleto: document.getElementById("campo-cadastro-nome").value.trim(),
       telefone: document.getElementById("campo-cadastro-telefone").value.trim(),
       email: document.getElementById("campo-cadastro-email").value.trim().toLowerCase(),
       documento: document.getElementById("campo-cadastro-documento").value.trim(),
       login: campoLogin.value.trim().toLowerCase(),
       senha: document.getElementById("campo-cadastro-senha").value.trim(),
+      tipo: tipoSelecionado,
     };
 
-    if (!novoCliente.nomeCompleto || !novoCliente.telefone || !novoCliente.email || !novoCliente.documento || !novoCliente.login || !novoCliente.senha) {
+    if (!novoUsuario.nomeCompleto || !novoUsuario.telefone || !novoUsuario.email || !novoUsuario.documento || !novoUsuario.login || !novoUsuario.senha) return;
+    if (!usuarioPodeCriarTipoUsuario(tipoSelecionado)) {
+      if (alerta) {
+        alerta.className = "alert alert-danger";
+        alerta.textContent = "Você não tem permissão para criar esse tipo de usuário.";
+      }
       return;
     }
 
-    if (credenciaisLogin[novoCliente.login] || obterClientePorLogin(novoCliente.login)) {
+    if (credenciaisLogin[novoUsuario.login] || obterClientePorLogin(novoUsuario.login)) {
       if (alerta) {
         alerta.className = "alert alert-danger";
         alerta.textContent = "Este login já está em uso. Informe outro login.";
@@ -1287,31 +1638,37 @@ function registrarFormularioCadastroCliente() {
     }
 
     try {
-      clientes.push(novoCliente);
-      await salvarClienteIndividual(novoCliente);
-      escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
+      await salvarClienteIndividual(novoUsuario);
+      if (tipoSelecionado === "Cliente") {
+        clientes.push(novoUsuario);
+        escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
+      }
     } catch (erro) {
       if (alerta) {
         alerta.className = "alert alert-danger";
-        alerta.textContent = erro.message || "Não foi possível cadastrar o cliente.";
+        alerta.textContent = erro.message || "Não foi possível cadastrar o usuário.";
       }
       return;
     }
 
     if (alerta) {
       alerta.className = "alert alert-success";
-      alerta.textContent = "Cliente cadastrado com sucesso. Agora você pode abrir o chamado.";
+      alerta.textContent = tipoSelecionado === "Cliente"
+        ? "Cliente cadastrado com sucesso. Agora você pode abrir o chamado."
+        : "Usuário cadastrado com sucesso.";
     }
 
     setTimeout(() => {
-      window.location.href = `create.html?clienteLogin=${encodeURIComponent(novoCliente.login)}`;
+      window.location.href = tipoSelecionado === "Cliente"
+        ? `create.html?clienteLogin=${encodeURIComponent(novoUsuario.login)}`
+        : "index.html";
     }, 800);
   });
 }
 
 function usuarioPodeAcessarChamado(chamado) {
   if (!chamado) return false;
-  if (["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) return true;
+  if (usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) return true;
   if (usuarioAutenticado?.tipo !== "Cliente") return false;
 
   const loginClienteChamado = (chamado.clienteLogin || "").toLowerCase();
@@ -1339,6 +1696,7 @@ async function carregarDetalhesChamado() {
   }
   preencherCabecalhoChamado(chamado);
   preencherHistorico(chamado);
+  configurarImpressaoHistorico(chamado);
   preencherAnexos(chamado);
   configurarPainelFinanceiro(chamado);
   registrarFormularioAtualizacao(chamado);
@@ -1362,7 +1720,7 @@ function atualizarNomeUsuarioCabecalho() {
 
 function atualizarAcoesCabecalhoAdministrador() {
   const botoesAdmin = document.querySelectorAll("[data-acao-admin='cadastrar-usuario']");
-  const exibir = usuarioAutenticado?.tipo === "Administrador";
+  const exibir = usuarioPodeCadastrarUsuarios();
   botoesAdmin.forEach((botao) => botao.classList.toggle("d-none", !exibir));
 }
 
@@ -1388,7 +1746,7 @@ async function configurarTelaLogin() {
     window.history.replaceState({}, "", `login.html${novaQuery ? `?${novaQuery}` : ""}`);
   }
   if (usuarioAutenticado) {
-    window.location.href = usuarioAutenticado.tipo === "Técnico" ? "index.html" : "cliente.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado.tipo) === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
   const alerta = document.getElementById("alerta-login");
@@ -1405,6 +1763,7 @@ async function configurarTelaLogin() {
   } catch {
     if (alerta) {
       alerta.className = "alert alert-warning";
+      alerta.classList.remove("d-none");
       alerta.textContent = "Não foi possível carregar a lista de projetos do servidor.";
     }
   }
@@ -1421,7 +1780,7 @@ async function configurarTelaLogin() {
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
         usuario,
-        tipo: autenticacao.tipo,
+        tipo: normalizarTipoUsuario(autenticacao.tipo),
         clienteId: autenticacao.clienteId,
       });
       window.location.href = autenticacao.redirect;
@@ -1431,7 +1790,8 @@ async function configurarTelaLogin() {
     }
     if (alerta) {
       alerta.className = "alert alert-danger";
-      alerta.textContent = "Credenciais inválidas.";
+      alerta.classList.remove("d-none");
+      alerta.textContent = "Usuário ou senha incorretos.";
     }
   });
 }
@@ -1454,7 +1814,7 @@ async function configurarPainelAdministrador() {
     item.addEventListener("click", () => {
       definirBancoProjetoAtivo(projeto);
       atual.textContent = projeto;
-      window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+      window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
     });
     containerLista.appendChild(item);
   });
@@ -1497,6 +1857,7 @@ function redirecionarParaLogin(forcarLogout = false) {
 
 async function inicializar() {
   garantirOverlayLoading();
+  configurarAlternadoresSenha();
   definirUsuarioAutenticadoSeSalvo();
 
   const paginaDetalhes = document.getElementById("detalhes-chamado");
@@ -1528,21 +1889,21 @@ async function inicializar() {
   }
 
   if (paginaAdmin && usuarioAutenticado?.tipo !== "Administrador") {
-    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
 
-  if (paginaListaTecnico && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaListaTecnico && !usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) {
     window.location.href = "cliente.html";
     return;
   }
 
-  if (paginaCriacao && !["Técnico", "Administrador", "Cliente"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaCriacao && !["Advogado", "Administrador", "Cliente"].includes(normalizarTipoUsuario(usuarioAutenticado?.tipo))) {
     window.location.href = "cliente.html";
     return;
   }
 
-  if (paginaCadastroCliente && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaCadastroCliente && !usuarioPodeCadastrarUsuarios()) {
     window.location.href = "cliente.html";
     return;
   }

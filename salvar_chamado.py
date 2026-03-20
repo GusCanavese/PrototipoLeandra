@@ -268,6 +268,10 @@ def normalizar_financeiro(financeiro):
         if not isinstance(parcelas_pagas, list):
             parcelas_pagas = []
         parcelas_pagas = [bool(parcelas_pagas[i]) if i < len(parcelas_pagas) else False for i in range(parcelas)]
+        datas_parcelas = item.get("installmentDates", item.get("datasParcelas", []))
+        if not isinstance(datas_parcelas, list):
+            datas_parcelas = []
+        datas_parcelas = [str(datas_parcelas[i]).strip() if i < len(datas_parcelas) and datas_parcelas[i] else "" for i in range(parcelas)]
         produto = str(item.get("product", item.get("produto", "")) or "").strip()
         if not produto:
             continue
@@ -279,9 +283,50 @@ def normalizar_financeiro(financeiro):
                 "installments": parcelas,
                 "description": str(item.get("description", item.get("descricao", "")) or "").strip(),
                 "paidInstallments": parcelas_pagas,
+                "installmentDates": datas_parcelas,
             }
         )
     return itens_normalizados
+
+
+def normalizar_evento_financeiro(evento):
+    if not evento:
+        return None
+    if isinstance(evento, str):
+        try:
+            dados = json.loads(evento)
+        except json.JSONDecodeError:
+            return None
+    else:
+        dados = evento
+
+    if not isinstance(dados, dict):
+        return None
+
+    produto = str(dados.get("product", dados.get("produto", "")) or "").strip()
+    escopo = str(dados.get("scope", dados.get("escopo", "")) or "").strip()
+    acao = str(dados.get("action", dados.get("acao", "")) or "").strip()
+
+    try:
+        valor = float(dados.get("value", dados.get("valor", 0)) or 0)
+    except (TypeError, ValueError):
+        valor = 0.0
+
+    try:
+        parcelas = max(1, int(dados.get("installments", dados.get("parcelas", 1)) or 1))
+    except (TypeError, ValueError):
+        parcelas = 1
+
+    if not produto or not escopo:
+        return None
+
+    return {
+        "action": acao or "create",
+        "scope": escopo,
+        "product": produto,
+        "value": valor,
+        "installments": parcelas,
+    }
 
 
 def resolver_tabela_atualizacoes(conn):
@@ -307,7 +352,7 @@ def garantir_colunas_financeiras(conn, tabela_atualizacoes):
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = %s
               AND TABLE_NAME = %s
-              AND COLUMN_NAME IN ('financeiro_cliente', 'financeiro_escritorio')
+              AND COLUMN_NAME IN ('financeiro_cliente', 'financeiro_escritorio', 'financeiro_evento')
             """,
             (banco_atual, tabela_atualizacoes),
         )
@@ -326,6 +371,10 @@ def garantir_colunas_financeiras(conn, tabela_atualizacoes):
             cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_escritorio LONGTEXT NULL")
         elif colunas_existentes["financeiro_escritorio"]["tipo"] != "longtext":
             cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_escritorio LONGTEXT NULL")
+        if "financeiro_evento" not in colunas_existentes:
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_evento LONGTEXT NULL")
+        elif colunas_existentes["financeiro_evento"]["tipo"] != "longtext":
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_evento LONGTEXT NULL")
     finally:
         cursor.close()
 
@@ -457,15 +506,22 @@ def substituir_clientes(nome_banco, clientes):
 
 
 def inserir_cliente(nome_banco, cliente):
+    tipo = cliente.get("tipo") or "Cliente"
+    if tipo == "Técnico":
+        tipo = "Advogado"
+    if tipo not in {"Cliente", "Advogado", "Administrador"}:
+        raise ValueError("Tipo de usuário inválido.")
+
     executar_write(
         nome_banco,
         """
         INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-        VALUES (%s, %s, 'Cliente', %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (
             cliente["login"],
             cliente["senha"],
+            tipo,
             cliente.get("nomeCompleto") or None,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
@@ -519,7 +575,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
     atualizacoes = executar_select(
         nome_banco,
         f"""
-        SELECT autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+        SELECT autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio, financeiro_evento
         FROM {tabela_atualizacoes}
         WHERE id_chamado = %s
         ORDER BY id DESC
@@ -551,6 +607,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
                 "message": atu["mensagem"],
                 "date": atu["data_atualizacao"],
                 "attachments": normalizar_anexos(atu["anexos"]),
+                "financialEvent": normalizar_evento_financeiro(atu.get("financeiro_evento")),
             }
             for atu in atualizacoes
         ],
@@ -592,21 +649,23 @@ def substituir_chamados(nome_banco, chamados):
             )
 
             for atualizacao in chamado.get("updates", []):
+                financeiro_evento = json.dumps(normalizar_evento_financeiro(atualizacao.get("financialEvent")), ensure_ascii=False)
                 cursor.execute(
                     f"""
                     INSERT INTO {tabela_atualizacoes} (
-                        id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+                        id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio, financeiro_evento
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         chamado["id"],
-                        atualizacao.get("author", "Técnico"),
+                        atualizacao.get("author", "T?cnico"),
                         atualizacao.get("message", ""),
                         atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")),
                         json.dumps(atualizacao.get("attachments", []), ensure_ascii=False),
                         financeiro_cliente,
                         financeiro_escritorio,
+                        financeiro_evento,
                     ),
                 )
 
@@ -684,7 +743,7 @@ def salvar_chamado_individual(nome_banco, chamado):
 
         cursor.execute(
             f"""
-            SELECT autor, mensagem, data_atualizacao, anexos
+            SELECT autor, mensagem, data_atualizacao, anexos, financeiro_evento
             FROM {tabela_atualizacoes}
             WHERE id_chamado = %s
             """,
@@ -696,6 +755,7 @@ def salvar_chamado_individual(nome_banco, chamado):
                 row[1] or "",
                 row[2] or "",
                 row[3] or "[]",
+                row[4] or "null",
             )
             for row in cursor.fetchall()
         }
@@ -704,20 +764,22 @@ def salvar_chamado_individual(nome_banco, chamado):
 
         for atualizacao in chamado_normalizado.get("updates", []):
             anexos_serializados = json.dumps(atualizacao.get("attachments", []), ensure_ascii=False)
+            financeiro_evento = json.dumps(normalizar_evento_financeiro(atualizacao.get("financialEvent")), ensure_ascii=False)
             assinatura = (
                 atualizacao.get("author", "Técnico") or "",
                 atualizacao.get("message", "") or "",
                 atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")) or "",
                 anexos_serializados,
+                financeiro_evento,
             )
             if assinatura in existentes:
                 continue
             cursor.execute(
                 f"""
                 INSERT INTO {tabela_atualizacoes} (
-                    id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+                    id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio, financeiro_evento
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chamado_normalizado["id"],
@@ -727,6 +789,7 @@ def salvar_chamado_individual(nome_banco, chamado):
                     assinatura[3],
                     financeiro_cliente,
                     financeiro_escritorio,
+                    assinatura[4],
                 ),
             )
 
@@ -747,9 +810,9 @@ def salvar_chamado_individual(nome_banco, chamado):
             cursor.execute(
                 f"""
                 INSERT INTO {tabela_atualizacoes} (
-                    id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+                    id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio, financeiro_evento
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chamado_normalizado["id"],
@@ -759,6 +822,7 @@ def salvar_chamado_individual(nome_banco, chamado):
                     "[]",
                     financeiro_cliente,
                     financeiro_escritorio,
+                    json.dumps(None, ensure_ascii=False),
                 ),
             )
 

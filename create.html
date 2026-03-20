@@ -18,7 +18,7 @@
         <div>
           <h1 class="h4 mb-0 fw-semibold text-primary">Criar novo chamado</h1>
           <p class="text-muted mb-0">
-            Técnicos, administradores e clientes podem abrir chamados.
+            Advogados, administradores e clientes podem abrir chamados.
           </p>
           <p class="text-muted mb-0" id="nome-usuario-cabecalho">Usuário: -</p>
         </div>
@@ -63,7 +63,6 @@
                       type="text"
                       id="campo-login-cliente"
                       class="form-control"
-                      placeholder="Ex.: cliente"
                       required
                     />
                   </div>
@@ -71,16 +70,8 @@
 
                 <div class="row g-3">
                   <div class="col-12 col-md-8">
-                    <label for="campo-resumo" class="form-label"
-                      >Resumo do problema</label
-                    >
-                    <input
-                      type="text"
-                      id="campo-resumo"
-                      class="form-control"
-                      placeholder="Descreva resumidamente"
-                      required
-                    />
+                    <label for="campo-resumo" class="form-label">Título do caso</label>
+                    <input type="text" id="campo-resumo" class="form-control" required/>
                   </div>
                   <div class="col-12 col-md-4">
                     <label for="campo-prioridade" class="form-label"
@@ -96,21 +87,11 @@
 
                 <div class="row g-3">
                   <div class="col-12 col-md-6">
-                    <label for="campo-processo" class="form-label"
-                      >Número do processo</label
-                    >
-                    <input
-                      type="text"
-                      id="campo-processo"
-                      class="form-control"
-                      placeholder="Ex.: 0001234-12.2024.8.26.0001"
-                    />
+                    <label for="campo-processo" class="form-label">Número do processo</label>
+                    <input type="text" id="campo-processo" class="form-control"/>
+
                     <div class="form-check mt-2">
-                      <input
-                        class="form-check-input"
-                        type="checkbox"
-                        id="campo-sem-processo"
-                      />
+                      <input class="form-check-input" type="checkbox" id="campo-sem-processo"/>
                       <label class="form-check-label" for="campo-sem-processo">
                         Sem processo
                       </label>
@@ -140,54 +121,30 @@
                   </div>
                   <div class="col-12 col-md-4">
                     <label for="campo-parceria-porcentagem" class="form-label">Porcentagem</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      id="campo-parceria-porcentagem"
-                      class="form-control"
-                      placeholder="Ex.: 30"
-                      disabled
-                    />
+                    <input type="number" min="0" max="100" id="campo-parceria-porcentagem" class="form-control" placeholder="Ex.: 30" disabled/>
                   </div>
                   <div class="col-12 col-md-4">
                     <label for="campo-parceria-com" class="form-label">Com quem</label>
-                    <input
-                      type="text"
-                      id="campo-parceria-com"
-                      class="form-control"
-                      placeholder="Nome do parceiro"
-                      disabled
-                    />
+                    <input type="text" id="campo-parceria-com" class="form-control" placeholder="Nome do parceiro" disabled/>
                   </div>
                 </div>
 
                 <div class="row g-3">
                   <div class="col-12 col-md-6">
                     <label for="campo-valor-inicial" class="form-label">Valor</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      id="campo-valor-inicial"
-                      class="form-control"
-                      placeholder="Ex.: 1500,00"
-                    />
+                    <input type="number" min="0" step="0.01" id="campo-valor-inicial" class="form-control" placeholder="Ex.: 1500,00" />
                   </div>
                   <div class="col-12 col-md-6">
                     <label for="campo-parcelas-iniciais" class="form-label">Parcelas</label>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      id="campo-parcelas-iniciais"
-                      class="form-control"
-                      placeholder="Ex.: 3"
-                    />
+                    <input type="number" min="1" step="1" id="campo-parcelas-iniciais" class="form-control"/>
                   </div>
                 </div>
 
                 <div class="row g-3">
+                  <div class="col-12 col-md-6">
+                    <label for="campo-primeira-parcela" class="form-label">Data de pagamento da 1ª parcela</label>
+                    <input type="date" id="campo-primeira-parcela" class="form-control" />
+                  </div>
                   <div class="col-12 col-md-6">
                     <label for="campo-anexo" class="form-label"
                       >Anexar arquivo (opcional)</label

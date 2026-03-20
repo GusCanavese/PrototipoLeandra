@@ -20,6 +20,7 @@
                 Identifique-se
               </h1>
               <form id="form-login" class="vstack gap-3">
+                <div class="alert alert-danger d-none" id="alerta-login" role="alert"></div>
 
                 <div>
                   <label for="campo-usuario" class="form-label">Usuário</label>
@@ -27,19 +28,22 @@
                     type="text"
                     id="campo-usuario"
                     class="form-control"
-                    placeholder="tecnico ou cliente"
+                    placeholder="advogado, administrador ou cliente"
                     required
                   />
                 </div>
                 <div>
                   <label for="campo-senha" class="form-label">Senha</label>
-                  <input
-                    type="password"
-                    id="campo-senha"
-                    class="form-control"
-                    placeholder="Digite a senha"
-                    required
-                  />
+                  <div class="input-group">
+                    <input
+                      type="password"
+                      id="campo-senha"
+                      class="form-control"
+                      placeholder="Digite a senha"
+                      required
+                    />
+                    <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
+                  </div>
                 </div>
                 <button type="submit" class="btn btn-primary w-100">
                   Entrar
