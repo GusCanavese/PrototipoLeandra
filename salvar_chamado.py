@@ -246,6 +246,10 @@ def normalizar_financeiro(financeiro):
         if not isinstance(parcelas_pagas, list):
             parcelas_pagas = []
         parcelas_pagas = [bool(parcelas_pagas[i]) if i < len(parcelas_pagas) else False for i in range(parcelas)]
+        datas_parcelas = item.get("installmentDates", item.get("datasParcelas", []))
+        if not isinstance(datas_parcelas, list):
+            datas_parcelas = []
+        datas_parcelas = [str(datas_parcelas[i]).strip() if i < len(datas_parcelas) and datas_parcelas[i] else "" for i in range(parcelas)]
         produto = str(item.get("product", item.get("produto", "")) or "").strip()
         if not produto:
             continue
@@ -257,6 +261,7 @@ def normalizar_financeiro(financeiro):
                 "installments": parcelas,
                 "description": str(item.get("description", item.get("descricao", "")) or "").strip(),
                 "paidInstallments": parcelas_pagas,
+                "installmentDates": datas_parcelas,
             }
         )
     return itens_normalizados

@@ -426,6 +426,74 @@ function criarParcelasFinanceiras(totalParcelas, parcelasExistentes = []) {
   return Array.from({ length: quantidade }, (_, indice) => Boolean(parcelasExistentes[indice]));
 }
 
+function normalizarDataPagamento(valor) {
+  if (!valor) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(valor))) return String(valor);
+  const data = new Date(valor);
+  if (Number.isNaN(data.getTime())) return "";
+  const ano = data.getFullYear();
+  const mes = String(data.getMonth() + 1).padStart(2, "0");
+  const dia = String(data.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+
+function adicionarMesesDataPagamento(dataBase, quantidadeMeses) {
+  const dataNormalizada = normalizarDataPagamento(dataBase);
+  if (!dataNormalizada) return "";
+  const [ano, mes, dia] = dataNormalizada.split("-").map(Number);
+  const data = new Date(ano, mes - 1, dia);
+  data.setMonth(data.getMonth() + quantidadeMeses);
+  const novoAno = data.getFullYear();
+  const novoMes = String(data.getMonth() + 1).padStart(2, "0");
+  const novoDia = String(data.getDate()).padStart(2, "0");
+  return `${novoAno}-${novoMes}-${novoDia}`;
+}
+
+function criarDatasParcelas(totalParcelas, datasExistentes = [], primeiraData = "") {
+  const quantidade = Math.max(1, parseInt(totalParcelas, 10) || 1);
+  const datasNormalizadas = Array.isArray(datasExistentes)
+    ? datasExistentes.map((data) => normalizarDataPagamento(data))
+    : [];
+  const primeiraDataNormalizada = normalizarDataPagamento(primeiraData) || datasNormalizadas[0] || "";
+
+  return Array.from({ length: quantidade }, (_, indice) => {
+    if (datasNormalizadas[indice]) return datasNormalizadas[indice];
+    if (!primeiraDataNormalizada) return "";
+    return adicionarMesesDataPagamento(primeiraDataNormalizada, indice);
+  });
+}
+
+function formatarDataPagamento(valor) {
+  const dataNormalizada = normalizarDataPagamento(valor);
+  if (!dataNormalizada) return "Sem data";
+  const [ano, mes, dia] = dataNormalizada.split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+function parcelaEstaVencida(dataPagamento, paga) {
+  if (paga) return false;
+  const dataNormalizada = normalizarDataPagamento(dataPagamento);
+  if (!dataNormalizada) return false;
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const [ano, mes, dia] = dataNormalizada.split("-").map(Number);
+  const vencimento = new Date(ano, mes - 1, dia);
+  vencimento.setHours(0, 0, 0, 0);
+  return vencimento < hoje;
+}
+
+function obterClasseStatusParcela(dataPagamento, paga) {
+  if (paga) return "financeiro-badge-pago";
+  if (parcelaEstaVencida(dataPagamento, paga)) return "financeiro-badge-pendente";
+  return "financeiro-badge-neutro";
+}
+
+function obterTextoStatusParcela(dataPagamento, paga) {
+  if (paga) return "Paga";
+  if (parcelaEstaVencida(dataPagamento, paga)) return "Vencida";
+  return "Agendada";
+}
+
 function normalizarItemFinanceiro(item = {}, indice = 0) {
   const totalParcelas = Math.max(1, parseInt(item.installments ?? item.parcelas, 10) || 1);
   const valor = Number(item.value ?? item.valor ?? 0);
@@ -436,6 +504,7 @@ function normalizarItemFinanceiro(item = {}, indice = 0) {
     installments: totalParcelas,
     description: String(item.description ?? item.descricao ?? "").trim(),
     paidInstallments: criarParcelasFinanceiras(totalParcelas, item.paidInstallments ?? item.parcelasPagas ?? []),
+    installmentDates: criarDatasParcelas(totalParcelas, item.installmentDates ?? item.datasParcelas ?? [], item.firstInstallmentDate ?? item.dataPrimeiraParcela ?? ""),
   };
 }
 
@@ -533,9 +602,10 @@ function abrirModalListaFinanceira(chamado, tipo) {
         .map((item) => {
           const parcelasHtml = (item.paidInstallments || [])
             .map((paga, indice) => {
-              const classe = paga ? "financeiro-badge-pago" : "financeiro-badge-pendente";
-              const texto = paga ? "Paga" : "Pendente";
-              return `<span class="badge ${classe} me-2 mb-2">Parcela ${indice + 1}: ${texto}</span>`;
+              const dataParcela = item.installmentDates?.[indice] || "";
+              const classe = obterClasseStatusParcela(dataParcela, paga);
+              const texto = obterTextoStatusParcela(dataParcela, paga);
+              return `<span class="badge ${classe} me-2 mb-2">Parcela ${indice + 1} - ${formatarDataPagamento(dataParcela)}: ${texto}</span>`;
             })
             .join("");
           return `
@@ -645,8 +715,9 @@ function configurarPainelFinanceiro(chamado) {
 
     selecoes[tipo].parcelaIndice = parcelaIndiceAtual;
     elementos.parcela.innerHTML = Array.from({ length: itemSelecionado.installments }, (_, indice) => {
-      const status = itemSelecionado.paidInstallments?.[indice] ? "paga" : "pendente";
-      return `<option value="${indice}">Parcela ${indice + 1} (${status})</option>`;
+      const dataParcela = itemSelecionado.installmentDates?.[indice] || "";
+      const status = obterTextoStatusParcela(dataParcela, itemSelecionado.paidInstallments?.[indice]).toLowerCase();
+      return `<option value="${indice}">Parcela ${indice + 1} - ${formatarDataPagamento(dataParcela)} (${status})</option>`;
     }).join("");
     elementos.parcela.disabled = !podeGerenciarFinanceiro;
     elementos.parcela.value = parcelaIndiceAtual;
@@ -810,12 +881,14 @@ function configurarPainelFinanceiro(chamado) {
         installments: itemExistente.installments,
         description: itemExistente.description,
         paidInstallments: [...(itemExistente.paidInstallments || [])],
+        installmentDates: [...(itemExistente.installmentDates || [])],
       };
       itemExistente.product = produto;
       itemExistente.value = valor;
       itemExistente.installments = parcelas;
       itemExistente.description = descricao;
       itemExistente.paidInstallments = criarParcelasFinanceiras(parcelas, itemExistente.paidInstallments);
+      itemExistente.installmentDates = criarDatasParcelas(parcelas, itemExistente.installmentDates);
       atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, itemExistente, "update");
     } else {
       item = normalizarItemFinanceiro({
@@ -825,6 +898,7 @@ function configurarPainelFinanceiro(chamado) {
         installments: parcelas,
         description: descricao,
         paidInstallments: Array.from({ length: parcelas }, () => false),
+        installmentDates: criarDatasParcelas(parcelas),
       });
       colecao.push(item);
       atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, item, "create");
@@ -847,6 +921,7 @@ function configurarPainelFinanceiro(chamado) {
         itemExistente.installments = snapshotAnterior.installments;
         itemExistente.description = snapshotAnterior.description;
         itemExistente.paidInstallments = snapshotAnterior.paidInstallments;
+        itemExistente.installmentDates = snapshotAnterior.installmentDates;
       } else {
         const indice = colecao.findIndex((registro) => registro.id === item.id);
         if (indice >= 0) colecao.splice(indice, 1);
@@ -1313,6 +1388,7 @@ function registrarFormularioCriacao() {
   const campoLoginCliente = document.getElementById("campo-login-cliente");
   const campoValorInicial = document.getElementById("campo-valor-inicial");
   const campoParcelasIniciais = document.getElementById("campo-parcelas-iniciais");
+  const campoPrimeiraParcela = document.getElementById("campo-primeira-parcela");
   const alertaCriacao = document.getElementById("alerta-criacao");
   const botaoCadastrarCliente = document.getElementById("btn-cadastrar-cliente");
   const usuarioEhCliente = usuarioAutenticado?.tipo === "Cliente";
@@ -1395,6 +1471,7 @@ function registrarFormularioCriacao() {
     const parcelasIniciaisInformadas = campoParcelasIniciais?.value?.trim() || "";
     const valorInicial = valorInicialInformado === "" ? null : Number(campoValorInicial.value);
     const parcelasIniciais = parcelasIniciaisInformadas === "" ? null : parseInt(campoParcelasIniciais.value, 10);
+    const primeiraParcela = normalizarDataPagamento(campoPrimeiraParcela?.value || "");
 
     if ((valorInicialInformado && !parcelasIniciaisInformadas) || (!valorInicialInformado && parcelasIniciaisInformadas)) {
       if (alertaCriacao) {
@@ -1408,6 +1485,14 @@ function registrarFormularioCriacao() {
       if (alertaCriacao) {
         alertaCriacao.className = "alert alert-warning";
         alertaCriacao.textContent = "Informe um valor válido e pelo menos 1 parcela.";
+      }
+      return;
+    }
+
+    if (valorInicialInformado && !primeiraParcela) {
+      if (alertaCriacao) {
+        alertaCriacao.className = "alert alert-warning";
+        alertaCriacao.textContent = "Informe a data de pagamento da primeira parcela.";
       }
       return;
     }
@@ -1444,6 +1529,7 @@ function registrarFormularioCriacao() {
                 product: resumo,
                 value: valorInicial,
                 installments: parcelasIniciais,
+                firstInstallmentDate: primeiraParcela,
               }
             : null,
         },
@@ -1457,6 +1543,7 @@ function registrarFormularioCriacao() {
               installments: parcelasIniciais,
               description: descricao,
               paidInstallments: Array.from({ length: parcelasIniciais }, () => false),
+              installmentDates: criarDatasParcelas(parcelasIniciais, [], primeiraParcela),
             }),
           ]
         : [],
