@@ -86,6 +86,81 @@ footer {
   font-size: 0.85rem;
 }
 
+.financeiro-card .form-control[readonly] {
+  background-color: #fff;
+}
+
+.financeiro-card {
+  font-size: 0.92rem;
+}
+
+.financeiro-card .card-body {
+  padding: 0.9rem;
+}
+
+.financeiro-card .form-label {
+  margin-bottom: 0.2rem;
+  font-size: 0.82rem;
+}
+
+.financeiro-card .form-control,
+.financeiro-card .form-select,
+.financeiro-card .input-group-text,
+.financeiro-card .btn {
+  font-size: 0.82rem;
+}
+
+.financeiro-card textarea.form-control {
+  min-height: 88px;
+}
+
+.financeiro-card strong {
+  font-size: 0.95rem;
+}
+
+.financeiro-card h2 {
+  font-size: 0.95rem;
+}
+
+.financeiro-card .btn-sm {
+  padding: 0.2rem 0.55rem;
+}
+
+.financeiro-card .col-md-6 {
+  width: 100%;
+}
+
+.financeiro-card .row.g-3 {
+  --bs-gutter-y: 0.65rem;
+  --bs-gutter-x: 0.65rem;
+}
+
+.financeiro-card .input-group-text {
+  background-color: #f8fafc;
+}
+
+.financeiro-painel,
+#painel-financeiro {
+  position: sticky;
+  top: 1rem;
+}
+
+.financeiro-lista-item + .financeiro-lista-item {
+  border-top: 1px solid #e2e8f0;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.financeiro-badge-pago {
+  background-color: #e7f6ec;
+  color: #157347;
+}
+
+.financeiro-badge-pendente {
+  background-color: #fff5e6;
+  color: #b45f06;
+}
+
 
 .ticket-card-body {
   min-height: 100%;
@@ -97,6 +172,14 @@ footer {
 
 .ticket-card-coluna-acoes {
   flex-shrink: 0;
+}
+
+@media (max-width: 991.98px) {
+  .financeiro-painel,
+  #painel-financeiro {
+    position: static;
+    top: auto;
+  }
 }
 
 @media (max-width: 576px) {

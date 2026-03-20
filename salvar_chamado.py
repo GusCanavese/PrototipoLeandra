@@ -28,6 +28,7 @@ app = Flask(__name__)
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
+tabelas_atualizacoes_cache = {}
 
 _connection_lock = Lock()
 _pools = {}
@@ -213,6 +214,134 @@ def normalizar_anexos(anexos):
     return anexos
 
 
+def normalizar_financeiro(financeiro):
+    if not financeiro:
+        return []
+    if isinstance(financeiro, str):
+        try:
+            dados = json.loads(financeiro)
+        except json.JSONDecodeError:
+            return []
+    else:
+        dados = financeiro
+
+    if not isinstance(dados, list):
+        return []
+
+    itens_normalizados = []
+    for indice, item in enumerate(dados):
+        if not isinstance(item, dict):
+            continue
+        parcelas = item.get("installments", item.get("parcelas", 1))
+        try:
+            parcelas = max(1, int(parcelas))
+        except (TypeError, ValueError):
+            parcelas = 1
+        valor = item.get("value", item.get("valor", 0))
+        try:
+            valor = float(valor)
+        except (TypeError, ValueError):
+            valor = 0.0
+        parcelas_pagas = item.get("paidInstallments", item.get("parcelasPagas", []))
+        if not isinstance(parcelas_pagas, list):
+            parcelas_pagas = []
+        parcelas_pagas = [bool(parcelas_pagas[i]) if i < len(parcelas_pagas) else False for i in range(parcelas)]
+        produto = str(item.get("product", item.get("produto", "")) or "").strip()
+        if not produto:
+            continue
+        itens_normalizados.append(
+            {
+                "id": item.get("id") or f"financeiro-{indice}",
+                "product": produto,
+                "value": valor,
+                "installments": parcelas,
+                "description": str(item.get("description", item.get("descricao", "")) or "").strip(),
+                "paidInstallments": parcelas_pagas,
+            }
+        )
+    return itens_normalizados
+
+
+def resolver_tabela_atualizacoes(conn):
+    cursor = conn.cursor()
+    try:
+        for nome_tabela in ("chamados_atualizacoes", "chamado_atualizacoes"):
+            cursor.execute("SHOW TABLES LIKE %s", (nome_tabela,))
+            if cursor.fetchone():
+                return nome_tabela
+    finally:
+        cursor.close()
+    return "chamado_atualizacoes"
+
+
+def garantir_colunas_financeiras(conn, tabela_atualizacoes):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            f"""
+            SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME IN ('financeiro_cliente', 'financeiro_escritorio')
+            """,
+            (banco_atual, tabela_atualizacoes),
+        )
+        colunas_existentes = {
+            linha[0]: {
+                "tipo": (linha[1] or "").lower(),
+                "tamanho": linha[2],
+            }
+            for linha in cursor.fetchall()
+        }
+        if "financeiro_cliente" not in colunas_existentes:
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_cliente LONGTEXT NULL")
+        elif colunas_existentes["financeiro_cliente"]["tipo"] != "longtext":
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_cliente LONGTEXT NULL")
+        if "financeiro_escritorio" not in colunas_existentes:
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_escritorio LONGTEXT NULL")
+        elif colunas_existentes["financeiro_escritorio"]["tipo"] != "longtext":
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_escritorio LONGTEXT NULL")
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_atualizacoes(nome_banco):
+    agora = datetime.now()
+    cache = tabelas_atualizacoes_cache.get(nome_banco)
+    if cache and agora < cache["expira_em"]:
+        return cache["tabela"]
+
+    def operacao(conn):
+        tabela_atualizacoes = resolver_tabela_atualizacoes(conn)
+        garantir_colunas_financeiras(conn, tabela_atualizacoes)
+        return tabela_atualizacoes
+
+    tabela = _executar_com_retry(nome_banco, operacao)
+    tabelas_atualizacoes_cache[nome_banco] = {
+        "tabela": tabela,
+        "expira_em": agora + timedelta(minutes=10),
+    }
+    return tabela
+
+
+def preparar_tabela_atualizacoes_em_conexao(nome_banco, conn):
+    agora = datetime.now()
+    cache = tabelas_atualizacoes_cache.get(nome_banco)
+    if cache and agora < cache["expira_em"]:
+        return cache["tabela"]
+
+    tabela = resolver_tabela_atualizacoes(conn)
+    garantir_colunas_financeiras(conn, tabela)
+    tabelas_atualizacoes_cache[nome_banco] = {
+        "tabela": tabela,
+        "expira_em": agora + timedelta(minutes=10),
+    }
+    return tabela
+
+
 def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     if valor is None or valor == "":
         return padrao
@@ -353,6 +482,7 @@ def listar_chamados(nome_banco, limite=50, offset=0):
 
 
 def obter_chamado_detalhe(nome_banco, id_chamado):
+    tabela_atualizacoes = preparar_tabela_atualizacoes(nome_banco)
     chamado = executar_select(
         nome_banco,
         """
@@ -369,14 +499,16 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
 
     atualizacoes = executar_select(
         nome_banco,
-        """
-        SELECT autor, mensagem, data_atualizacao, anexos
-        FROM chamado_atualizacoes
+        f"""
+        SELECT autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+        FROM {tabela_atualizacoes}
         WHERE id_chamado = %s
         ORDER BY id DESC
         """,
         (id_chamado,),
     )
+    financeiro_cliente = normalizar_financeiro(atualizacoes[0]["financeiro_cliente"]) if atualizacoes else []
+    financeiro_escritorio = normalizar_financeiro(atualizacoes[0]["financeiro_escritorio"]) if atualizacoes else []
 
     return {
         "id": chamado["id_chamado"],
@@ -392,6 +524,8 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
         "partnershipWith": chamado["parceria_com"] or "",
         "openedAt": chamado["abertura"] or "",
         "lastUpdate": chamado["ultima_atualizacao"] or "",
+        "financialClient": financeiro_cliente,
+        "financialOffice": financeiro_escritorio,
         "updates": [
             {
                 "author": atu["autor"],
@@ -407,10 +541,13 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
 def substituir_chamados(nome_banco, chamados):
     def transacao(conn):
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM chamado_atualizacoes")
+        tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
+        cursor.execute(f"DELETE FROM {tabela_atualizacoes}")
         cursor.execute("DELETE FROM chamados")
 
         for chamado in chamados:
+            financeiro_cliente = json.dumps(normalizar_financeiro(chamado.get("financialClient", [])), ensure_ascii=False)
+            financeiro_escritorio = json.dumps(normalizar_financeiro(chamado.get("financialOffice", [])), ensure_ascii=False)
             cursor.execute(
                 """
                 INSERT INTO chamados (
@@ -437,9 +574,11 @@ def substituir_chamados(nome_banco, chamados):
 
             for atualizacao in chamado.get("updates", []):
                 cursor.execute(
-                    """
-                    INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
-                    VALUES (%s, %s, %s, %s, %s)
+                    f"""
+                    INSERT INTO {tabela_atualizacoes} (
+                        id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         chamado["id"],
@@ -447,6 +586,8 @@ def substituir_chamados(nome_banco, chamados):
                         atualizacao.get("message", ""),
                         atualizacao.get("date", datetime.now().strftime("%d/%m/%Y %H:%M")),
                         json.dumps(atualizacao.get("attachments", []), ensure_ascii=False),
+                        financeiro_cliente,
+                        financeiro_escritorio,
                     ),
                 )
 
@@ -457,9 +598,12 @@ def substituir_chamados(nome_banco, chamados):
 
 def salvar_chamado_individual(nome_banco, chamado):
     chamado_normalizado = dict(chamado or {})
+    chamado_normalizado["financialClient"] = normalizar_financeiro(chamado_normalizado.get("financialClient", []))
+    chamado_normalizado["financialOffice"] = normalizar_financeiro(chamado_normalizado.get("financialOffice", []))
 
     def transacao(conn):
         cursor = conn.cursor()
+        tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
 
         id_chamado = (chamado_normalizado.get("id") or "").strip()
         if not id_chamado:
@@ -520,9 +664,9 @@ def salvar_chamado_individual(nome_banco, chamado):
         )
 
         cursor.execute(
-            """
+            f"""
             SELECT autor, mensagem, data_atualizacao, anexos
-            FROM chamado_atualizacoes
+            FROM {tabela_atualizacoes}
             WHERE id_chamado = %s
             """,
             (chamado_normalizado["id"],),
@@ -536,6 +680,8 @@ def salvar_chamado_individual(nome_banco, chamado):
             )
             for row in cursor.fetchall()
         }
+        financeiro_cliente = json.dumps(chamado_normalizado.get("financialClient", []), ensure_ascii=False)
+        financeiro_escritorio = json.dumps(chamado_normalizado.get("financialOffice", []), ensure_ascii=False)
 
         for atualizacao in chamado_normalizado.get("updates", []):
             anexos_serializados = json.dumps(atualizacao.get("attachments", []), ensure_ascii=False)
@@ -548,9 +694,11 @@ def salvar_chamado_individual(nome_banco, chamado):
             if assinatura in existentes:
                 continue
             cursor.execute(
-                """
-                INSERT INTO chamado_atualizacoes (id_chamado, autor, mensagem, data_atualizacao, anexos)
-                VALUES (%s, %s, %s, %s, %s)
+                f"""
+                INSERT INTO {tabela_atualizacoes} (
+                    id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chamado_normalizado["id"],
@@ -558,6 +706,40 @@ def salvar_chamado_individual(nome_banco, chamado):
                     assinatura[1],
                     assinatura[2],
                     assinatura[3],
+                    financeiro_cliente,
+                    financeiro_escritorio,
+                ),
+            )
+
+        cursor.execute(
+            f"""
+            UPDATE {tabela_atualizacoes}
+            SET financeiro_cliente = %s,
+                financeiro_escritorio = %s
+            WHERE id_chamado = %s
+            """,
+            (
+                financeiro_cliente,
+                financeiro_escritorio,
+                chamado_normalizado["id"],
+            ),
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                f"""
+                INSERT INTO {tabela_atualizacoes} (
+                    id_chamado, autor, mensagem, data_atualizacao, anexos, financeiro_cliente, financeiro_escritorio
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    chamado_normalizado["id"],
+                    "Sistema",
+                    "Registro financeiro inicial.",
+                    chamado_normalizado.get("lastUpdate", datetime.now().strftime("%d/%m/%Y %H:%M")),
+                    "[]",
+                    financeiro_cliente,
+                    financeiro_escritorio,
                 ),
             )
 
