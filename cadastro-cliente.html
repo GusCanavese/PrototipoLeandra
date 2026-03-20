@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cadastrar Cliente</title>
+    <title>Cadastrar Usuário</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
@@ -14,8 +14,8 @@
     <header class="bg-white border-bottom shadow-sm">
       <div class="container py-3 d-flex justify-content-between align-items-center">
         <div>
-          <h1 class="h4 mb-0 fw-semibold text-primary">Cadastrar cliente</h1>
-          <p class="text-muted mb-0">Preencha os dados básicos para habilitar acesso do cliente.</p>
+          <h1 class="h4 mb-0 fw-semibold text-primary">Cadastrar usuário</h1>
+          <p class="text-muted mb-0">Preencha os dados básicos para habilitar acesso ao sistema.</p>
           <p class="text-muted mb-0" id="nome-usuario-cabecalho">Usuário: -</p>
         </div>
         <div class="d-flex gap-2">
@@ -30,9 +30,7 @@
         <div class="col-12 col-lg-8 col-xl-6">
           <div class="card shadow-sm">
             <div class="card-body">
-              <div class="alert alert-info" id="alerta-cadastro-cliente" role="status">
-                Após cadastrar, esse login e senha poderão ser usados na tela do cliente.
-              </div>
+
 
               <form id="form-cadastro-cliente" class="vstack gap-3">
                 <div>
@@ -56,16 +54,25 @@
                 </div>
 
                 <div>
+                  <label for="campo-cadastro-tipo" class="form-label">Tipo de usuário</label>
+                  <select id="campo-cadastro-tipo" class="form-select" required></select>
+                  <div class="form-text" id="texto-ajuda-tipo-cadastro"></div>
+                </div>
+
+                <div>
                   <label for="campo-cadastro-login" class="form-label">Login</label>
                   <input type="text" id="campo-cadastro-login" class="form-control" required />
                 </div>
 
                 <div>
                   <label for="campo-cadastro-senha" class="form-label">Senha</label>
-                  <input type="password" id="campo-cadastro-senha" class="form-control" required />
+                  <div class="input-group">
+                    <input type="password" id="campo-cadastro-senha" class="form-control" required />
+                    <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-cadastro-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
+                  </div>
                 </div>
 
-                <button type="submit" class="btn btn-primary">Salvar cliente</button>
+                <button type="submit" class="btn btn-primary">Salvar usuário</button>
               </form>
             </div>
           </div>

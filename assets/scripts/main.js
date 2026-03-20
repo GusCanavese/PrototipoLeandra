@@ -10,7 +10,7 @@ const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
 const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
-const credenciaisLogin = {tecnico: { senha: "tecnico123", tipo: "Técnico", redirect: "index.html" },};
+const credenciaisLogin = {};
 
 let chamados = [];
 let clientes = [];
@@ -20,6 +20,49 @@ let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 
+
+
+function normalizarTipoUsuario(tipo) {
+  if (tipo === "Técnico") return "Advogado";
+  return tipo || "";
+}
+
+function usuarioEhAdministrador() {
+  return normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Administrador";
+}
+
+function usuarioEhPerfilInterno(tipo = usuarioAutenticado?.tipo) {
+  return ["Advogado", "Administrador"].includes(normalizarTipoUsuario(tipo));
+}
+
+function usuarioPodeCadastrarUsuarios() {
+  return usuarioEhPerfilInterno();
+}
+
+function usuarioPodeCriarTipoUsuario(tipo) {
+  const tipoNormalizado = normalizarTipoUsuario(tipo);
+  if (tipoNormalizado === "Advogado") return usuarioEhAdministrador();
+  return usuarioPodeCadastrarUsuarios();
+}
+
+function obterRotuloTipoCadastro() {
+  return usuarioEhAdministrador() ? "Cliente ou advogado" : "Cliente";
+}
+
+function configurarAlternadoresSenha() {
+  document.querySelectorAll("[data-toggle-password]").forEach((botao) => {
+    botao.addEventListener("click", () => {
+      const seletor = botao.getAttribute("data-toggle-password");
+      const campo = seletor ? document.querySelector(seletor) : null;
+      if (!campo) return;
+      const exibindo = campo.type === "text";
+      campo.type = exibindo ? "password" : "text";
+      botao.setAttribute("aria-pressed", String(!exibindo));
+      botao.setAttribute("aria-label", exibindo ? "Mostrar senha" : "Ocultar senha");
+      botao.innerHTML = exibindo ? "👁" : "🙈";
+    });
+  });
+}
 
 function obterBancoProjetoAtual() {
   return (bancoProjetoAtivo || "teste").trim() || "teste";
@@ -441,7 +484,7 @@ function obterColecaoFinanceira(chamado, tipo) {
 }
 
 function usuarioPodeGerenciarFinanceiro() {
-  return ["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo);
+  return usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
 }
 
 function obterRotuloEscopoFinanceiro(tipo) {
@@ -865,8 +908,8 @@ function obterUsuarioSalvo() {
 }
 
 function salvarUsuarioAutenticado(usuario) {
-  usuarioAutenticado = usuario;
-  localStorage.setItem(CHAVE_STORAGE_LOGIN, JSON.stringify(usuario));
+  usuarioAutenticado = { ...usuario, tipo: normalizarTipoUsuario(usuario?.tipo) };
+  localStorage.setItem(CHAVE_STORAGE_LOGIN, JSON.stringify(usuarioAutenticado));
 }
 
 function limparAutenticacao() {
@@ -875,7 +918,10 @@ function limparAutenticacao() {
 }
 
 function definirUsuarioAutenticadoSeSalvo() {
-  if (!usuarioAutenticado) usuarioAutenticado = obterUsuarioSalvo();
+  if (!usuarioAutenticado) {
+    const salvo = obterUsuarioSalvo();
+    if (salvo) usuarioAutenticado = { ...salvo, tipo: normalizarTipoUsuario(salvo.tipo) };
+  }
 }
 
 function createPriorityBadge(priority) {
@@ -1026,7 +1072,7 @@ function configurarImpressaoHistorico(chamado) {
   const botaoImprimir = document.getElementById("btn-imprimir-historico");
   if (!botaoImprimir) return;
 
-  const podeImprimir = ["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo);
+  const podeImprimir = usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
   botaoImprimir.classList.toggle("d-none", !podeImprimir);
   if (!podeImprimir) {
     botaoImprimir.onclick = null;
@@ -1197,7 +1243,7 @@ function registrarFormularioAtualizacao(chamado) {
       ? [{ name: arquivo.name, content: await lerArquivoComoDataUrl(arquivo) }]
       : [];
     const nova = {
-      author: usuarioAutenticado?.tipo || "Técnico",
+      author: usuarioAutenticado?.tipo || "Advogado",
       message: descricao,
       date: formatarDataHoraAtual(),
       attachments: anexoSerializado,
@@ -1238,7 +1284,7 @@ function registrarFormularioAtualizacao(chamado) {
       alert(erro.message || "Não foi possível excluir o chamado.");
       return;
     }
-    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
   };
 }
 
@@ -1338,7 +1384,7 @@ function registrarFormularioCriacao() {
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
-    const usuarioPodeCriar = ["Técnico", "Administrador", "Cliente"].includes(usuarioAutenticado?.tipo);
+    const usuarioPodeCriar = ["Advogado", "Administrador", "Cliente"].includes(normalizarTipoUsuario(usuarioAutenticado?.tipo));
     if (!usuarioPodeCriar) return;
 
     const dataAtual = new Date();
@@ -1447,7 +1493,7 @@ function registrarFormularioCriacao() {
       }
       return;
     }
-    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
   });
 }
 
@@ -1457,26 +1503,46 @@ function registrarFormularioCadastroCliente() {
 
   const alerta = document.getElementById("alerta-cadastro-cliente");
   const campoLogin = document.getElementById("campo-cadastro-login");
+  const campoTipo = document.getElementById("campo-cadastro-tipo");
+  const textoAjudaTipo = document.getElementById("texto-ajuda-tipo-cadastro");
   const loginPreenchido = new URLSearchParams(window.location.search).get("login");
   if (loginPreenchido) campoLogin.value = loginPreenchido;
+
+  if (campoTipo) {
+    const tiposPermitidos = [
+      { valor: "Cliente", label: "Cliente" },
+      ...(usuarioEhAdministrador() ? [{ valor: "Advogado", label: "Advogado" }] : []),
+    ];
+    campoTipo.innerHTML = tiposPermitidos
+      .map((tipo) => `<option value="${tipo.valor}">${tipo.label}</option>`)
+      .join("");
+  }
+  if (textoAjudaTipo) textoAjudaTipo.textContent = `Perfis disponíveis: ${obterRotuloTipoCadastro()}.`;
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
 
-    const novoCliente = {
+    const tipoSelecionado = normalizarTipoUsuario(campoTipo?.value || "Cliente");
+    const novoUsuario = {
       nomeCompleto: document.getElementById("campo-cadastro-nome").value.trim(),
       telefone: document.getElementById("campo-cadastro-telefone").value.trim(),
       email: document.getElementById("campo-cadastro-email").value.trim().toLowerCase(),
       documento: document.getElementById("campo-cadastro-documento").value.trim(),
       login: campoLogin.value.trim().toLowerCase(),
       senha: document.getElementById("campo-cadastro-senha").value.trim(),
+      tipo: tipoSelecionado,
     };
 
-    if (!novoCliente.nomeCompleto || !novoCliente.telefone || !novoCliente.email || !novoCliente.documento || !novoCliente.login || !novoCliente.senha) {
+    if (!novoUsuario.nomeCompleto || !novoUsuario.telefone || !novoUsuario.email || !novoUsuario.documento || !novoUsuario.login || !novoUsuario.senha) return;
+    if (!usuarioPodeCriarTipoUsuario(tipoSelecionado)) {
+      if (alerta) {
+        alerta.className = "alert alert-danger";
+        alerta.textContent = "Você não tem permissão para criar esse tipo de usuário.";
+      }
       return;
     }
 
-    if (credenciaisLogin[novoCliente.login] || obterClientePorLogin(novoCliente.login)) {
+    if (credenciaisLogin[novoUsuario.login] || obterClientePorLogin(novoUsuario.login)) {
       if (alerta) {
         alerta.className = "alert alert-danger";
         alerta.textContent = "Este login já está em uso. Informe outro login.";
@@ -1485,31 +1551,37 @@ function registrarFormularioCadastroCliente() {
     }
 
     try {
-      clientes.push(novoCliente);
-      await salvarClienteIndividual(novoCliente);
-      escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
+      await salvarClienteIndividual(novoUsuario);
+      if (tipoSelecionado === "Cliente") {
+        clientes.push(novoUsuario);
+        escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
+      }
     } catch (erro) {
       if (alerta) {
         alerta.className = "alert alert-danger";
-        alerta.textContent = erro.message || "Não foi possível cadastrar o cliente.";
+        alerta.textContent = erro.message || "Não foi possível cadastrar o usuário.";
       }
       return;
     }
 
     if (alerta) {
       alerta.className = "alert alert-success";
-      alerta.textContent = "Cliente cadastrado com sucesso. Agora você pode abrir o chamado.";
+      alerta.textContent = tipoSelecionado === "Cliente"
+        ? "Cliente cadastrado com sucesso. Agora você pode abrir o chamado."
+        : "Usuário cadastrado com sucesso.";
     }
 
     setTimeout(() => {
-      window.location.href = `create.html?clienteLogin=${encodeURIComponent(novoCliente.login)}`;
+      window.location.href = tipoSelecionado === "Cliente"
+        ? `create.html?clienteLogin=${encodeURIComponent(novoUsuario.login)}`
+        : "index.html";
     }, 800);
   });
 }
 
 function usuarioPodeAcessarChamado(chamado) {
   if (!chamado) return false;
-  if (["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) return true;
+  if (usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) return true;
   if (usuarioAutenticado?.tipo !== "Cliente") return false;
 
   const loginClienteChamado = (chamado.clienteLogin || "").toLowerCase();
@@ -1561,7 +1633,7 @@ function atualizarNomeUsuarioCabecalho() {
 
 function atualizarAcoesCabecalhoAdministrador() {
   const botoesAdmin = document.querySelectorAll("[data-acao-admin='cadastrar-usuario']");
-  const exibir = usuarioAutenticado?.tipo === "Administrador";
+  const exibir = usuarioPodeCadastrarUsuarios();
   botoesAdmin.forEach((botao) => botao.classList.toggle("d-none", !exibir));
 }
 
@@ -1587,7 +1659,7 @@ async function configurarTelaLogin() {
     window.history.replaceState({}, "", `login.html${novaQuery ? `?${novaQuery}` : ""}`);
   }
   if (usuarioAutenticado) {
-    window.location.href = usuarioAutenticado.tipo === "Técnico" ? "index.html" : "cliente.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado.tipo) === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
   const alerta = document.getElementById("alerta-login");
@@ -1604,6 +1676,7 @@ async function configurarTelaLogin() {
   } catch {
     if (alerta) {
       alerta.className = "alert alert-warning";
+      alerta.classList.remove("d-none");
       alerta.textContent = "Não foi possível carregar a lista de projetos do servidor.";
     }
   }
@@ -1620,7 +1693,7 @@ async function configurarTelaLogin() {
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
         usuario,
-        tipo: autenticacao.tipo,
+        tipo: normalizarTipoUsuario(autenticacao.tipo),
         clienteId: autenticacao.clienteId,
       });
       window.location.href = autenticacao.redirect;
@@ -1630,7 +1703,8 @@ async function configurarTelaLogin() {
     }
     if (alerta) {
       alerta.className = "alert alert-danger";
-      alerta.textContent = "Credenciais inválidas.";
+      alerta.classList.remove("d-none");
+      alerta.textContent = "Usuário ou senha incorretos.";
     }
   });
 }
@@ -1653,7 +1727,7 @@ async function configurarPainelAdministrador() {
     item.addEventListener("click", () => {
       definirBancoProjetoAtivo(projeto);
       atual.textContent = projeto;
-      window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+      window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
     });
     containerLista.appendChild(item);
   });
@@ -1696,6 +1770,7 @@ function redirecionarParaLogin(forcarLogout = false) {
 
 async function inicializar() {
   garantirOverlayLoading();
+  configurarAlternadoresSenha();
   definirUsuarioAutenticadoSeSalvo();
 
   const paginaDetalhes = document.getElementById("detalhes-chamado");
@@ -1727,21 +1802,21 @@ async function inicializar() {
   }
 
   if (paginaAdmin && usuarioAutenticado?.tipo !== "Administrador") {
-    window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
+    window.location.href = normalizarTipoUsuario(usuarioAutenticado?.tipo) === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
 
-  if (paginaListaTecnico && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaListaTecnico && !usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) {
     window.location.href = "cliente.html";
     return;
   }
 
-  if (paginaCriacao && !["Técnico", "Administrador", "Cliente"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaCriacao && !["Advogado", "Administrador", "Cliente"].includes(normalizarTipoUsuario(usuarioAutenticado?.tipo))) {
     window.location.href = "cliente.html";
     return;
   }
 
-  if (paginaCadastroCliente && !["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo)) {
+  if (paginaCadastroCliente && !usuarioPodeCadastrarUsuarios()) {
     window.location.href = "cliente.html";
     return;
   }

@@ -482,15 +482,22 @@ def substituir_clientes(nome_banco, clientes):
 
 
 def inserir_cliente(nome_banco, cliente):
+    tipo = cliente.get("tipo") or "Cliente"
+    if tipo == "Técnico":
+        tipo = "Advogado"
+    if tipo not in {"Cliente", "Advogado", "Administrador"}:
+        raise ValueError("Tipo de usuário inválido.")
+
     executar_write(
         nome_banco,
         """
         INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-        VALUES (%s, %s, 'Cliente', %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (
             cliente["login"],
             cliente["senha"],
+            tipo,
             cliente.get("nomeCompleto") or None,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
@@ -950,8 +957,8 @@ async def api_login():
     if not autenticado:
         return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 
-    tipo = autenticado["tipo"]
-    redirect = "admin.html" if tipo == "Administrador" else ("index.html" if tipo == "Técnico" else "cliente.html")
+    tipo = "Advogado" if autenticado["tipo"] == "Técnico" else autenticado["tipo"]
+    redirect = "admin.html" if tipo == "Administrador" else ("index.html" if tipo == "Advogado" else "cliente.html")
     cliente_id = autenticado["usuario"] if tipo == "Cliente" else ""
     return responder_json(
         {
