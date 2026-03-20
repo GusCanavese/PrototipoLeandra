@@ -28,13 +28,18 @@
       <div class="row g-4">
         <div class="col-12 col-lg-3">
           <div class="vstack gap-3 mb-3" id="painel-financeiro">
-            <div class="card shadow-sm financeiro-card">
+            <div class="card shadow-sm financeiro-card d-none" id="card-financeiro-escritorio">
               <div class="card-body">
                 <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3">
                   <h2 class="h6 mb-0">Pago pelo Escritório</h2>
-                  <button type="button" class="btn btn-outline-primary btn-sm" id="btn-adicionar-financeiro-escritorio">
-                    Adicionar
-                  </button>
+                  <div class="d-flex gap-2 flex-wrap">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="btn-adicionar-financeiro-escritorio">
+                      Adicionar
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-editar-financeiro-escritorio">
+                      Editar
+                    </button>
+                  </div>
                 </div>
 
                 <div class="row g-3">
@@ -80,13 +85,18 @@
               </div>
             </div>
 
-            <div class="card shadow-sm financeiro-card">
+            <div class="card shadow-sm financeiro-card" id="card-financeiro-cliente">
               <div class="card-body">
                 <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3">
                   <h2 class="h6 mb-0">Pago pelo Cliente</h2>
-                  <button type="button" class="btn btn-outline-primary btn-sm" id="btn-adicionar-financeiro-cliente">
-                    Adicionar
-                  </button>
+                  <div class="d-flex gap-2 flex-wrap">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="btn-adicionar-financeiro-cliente">
+                      Adicionar
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-editar-financeiro-cliente">
+                      Editar
+                    </button>
+                  </div>
                 </div>
 
                 <div class="row g-3">
@@ -248,8 +258,9 @@
               </div>
             </div>
             <div class="modal-footer">
+              <button type="button" class="btn btn-outline-danger me-auto d-none" id="btn-excluir-financeiro">Excluir</button>
               <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
-              <button type="submit" class="btn btn-primary">Salvar produto</button>
+              <button type="submit" class="btn btn-primary" id="btn-salvar-financeiro">Salvar produto</button>
             </div>
           </form>
         </div>

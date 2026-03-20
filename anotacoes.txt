@@ -1,5 +1,6 @@
-1 - criar uma anotação para pagamentos          ===> Samuel (andamento)
-2 - diminuir tempo de carregamento das páginas  ===> Gustavo (concluído, reduzido a quantidade de informações carregadas por página)
-3 - hospedagem em um dominio real               ===>
-4 - testar conexões simultâneas
-5 - log
+1 - criar uma anotação para pagamentos                                                  ===> Samuel  (concluido)
+2 - diminuir tempo de carregamento das páginas                                          ===> Gustavo (concluído, reduzido a quantidade de informações carregadas por página)
+3 - hospedagem em um dominio real                                                       ===> Gustavo (em andamento, falta alterar o dominio)
+4 - testar conexões simultâneas                                                         ===> Gustavo (iniciando)
+5 - permitir impressão do relatório                                                     ===> ()
+6 - enviar notificações por email do cliente quando tiver uma atualização no chamado    ===> ()

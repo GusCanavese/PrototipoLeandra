@@ -412,6 +412,12 @@ function calcularValorRestanteFinanceiro(item) {
   return Math.max(0, (totalParcelas - pagas) * valorParcela);
 }
 
+function calcularValorParcelaFinanceira(item) {
+  if (!item) return 0;
+  const totalParcelas = Math.max(1, item.installments || 1);
+  return (Number(item.value) || 0) / totalParcelas;
+}
+
 function calcularValorRestanteTotalFinanceiro(itens = []) {
   return (itens || []).reduce((total, item) => total + calcularValorRestanteFinanceiro(item), 0);
 }
@@ -423,6 +429,10 @@ function obterTituloFinanceiro(tipo) {
 function obterColecaoFinanceira(chamado, tipo) {
   garantirFinanceiroChamado(chamado);
   return tipo === "escritorio" ? chamado.financialOffice : chamado.financialClient;
+}
+
+function usuarioPodeGerenciarFinanceiro() {
+  return ["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo);
 }
 
 function obterResumoParcelas(item) {
@@ -473,6 +483,12 @@ function abrirModalListaFinanceira(chamado, tipo) {
 
 function configurarPainelFinanceiro(chamado) {
   garantirFinanceiroChamado(chamado);
+  const podeGerenciarFinanceiro = usuarioPodeGerenciarFinanceiro();
+  const cardFinanceiroEscritorio = document.getElementById("card-financeiro-escritorio");
+  const cardFinanceiroCliente = document.getElementById("card-financeiro-cliente");
+
+  if (cardFinanceiroEscritorio) cardFinanceiroEscritorio.classList.toggle("d-none", usuarioAutenticado?.tipo === "Cliente");
+  if (cardFinanceiroCliente) cardFinanceiroCliente.classList.remove("d-none");
 
   const modalCadastroElemento = document.getElementById("modal-financeiro");
   const modalListaElemento = document.getElementById("modal-financeiro-lista");
@@ -487,11 +503,15 @@ function configurarPainelFinanceiro(chamado) {
   const campoValor = document.getElementById("modal-financeiro-valor");
   const campoParcelas = document.getElementById("modal-financeiro-parcelas");
   const campoDescricao = document.getElementById("modal-financeiro-descricao");
+  const botaoSalvarFinanceiro = document.getElementById("btn-salvar-financeiro");
+  const botaoExcluirFinanceiro = document.getElementById("btn-excluir-financeiro");
   const selecoes = {
     escritorio: { produtoId: "", parcelaIndice: "" },
     cliente: { produtoId: "", parcelaIndice: "" },
   };
   let tipoModalAtual = "escritorio";
+  let modoModalFinanceiro = "adicionar";
+  let itemEdicaoAtualId = "";
 
   function obterElementosTipo(tipo) {
     return {
@@ -501,6 +521,7 @@ function configurarPainelFinanceiro(chamado) {
       parcelaPaga: document.getElementById(`financeiro-${tipo}-parcela-paga`),
       descricao: document.getElementById(`financeiro-${tipo}-descricao`),
       restante: document.getElementById(`financeiro-${tipo}-restante`),
+      botaoEditar: document.getElementById(`btn-editar-financeiro-${tipo}`),
     };
   }
 
@@ -524,7 +545,8 @@ function configurarPainelFinanceiro(chamado) {
       ? itens.map((item) => `<option value="${item.id}">${item.product}</option>`).join("")
       : '<option value="">Nenhum produto cadastrado</option>';
     elementos.produto.value = produtoIdSelecionado;
-    elementos.produto.disabled = !itens.length;
+    elementos.produto.disabled = !itens.length || !podeGerenciarFinanceiro;
+    if (elementos.botaoEditar) elementos.botaoEditar.disabled = !itemSelecionado || !podeGerenciarFinanceiro;
 
     if (!itemSelecionado) {
       elementos.valor.textContent = formatarMoeda(0);
@@ -538,11 +560,6 @@ function configurarPainelFinanceiro(chamado) {
       return;
     }
 
-    elementos.valor.textContent = formatarMoeda(itemSelecionado.value);
-    elementos.descricao.value = itemSelecionado.description || "";
-    elementos.descricao.disabled = false;
-    elementos.restante.textContent = formatarMoeda(calcularValorRestanteTotalFinanceiro(itens));
-
     const parcelaIndiceAtual = selecoes[tipo].parcelaIndice === ""
       ? "0"
       : String(Math.min(parseInt(selecoes[tipo].parcelaIndice, 10) || 0, itemSelecionado.installments - 1));
@@ -552,10 +569,15 @@ function configurarPainelFinanceiro(chamado) {
       const status = itemSelecionado.paidInstallments?.[indice] ? "paga" : "pendente";
       return `<option value="${indice}">Parcela ${indice + 1} (${status})</option>`;
     }).join("");
-    elementos.parcela.disabled = false;
+    elementos.parcela.disabled = !podeGerenciarFinanceiro;
     elementos.parcela.value = parcelaIndiceAtual;
-    elementos.parcelaPaga.disabled = false;
+    elementos.parcelaPaga.disabled = !podeGerenciarFinanceiro;
     elementos.parcelaPaga.checked = Boolean(itemSelecionado.paidInstallments?.[parseInt(parcelaIndiceAtual, 10) || 0]);
+    elementos.valor.textContent = formatarMoeda(calcularValorParcelaFinanceira(itemSelecionado));
+    elementos.descricao.value = itemSelecionado.description || "";
+    elementos.descricao.disabled = !podeGerenciarFinanceiro;
+    elementos.descricao.readOnly = !podeGerenciarFinanceiro;
+    elementos.restante.textContent = formatarMoeda(calcularValorRestanteTotalFinanceiro(itens));
   }
 
   async function persistirFinanceiro() {
@@ -564,13 +586,61 @@ function configurarPainelFinanceiro(chamado) {
     preencherCabecalhoChamado(chamado);
   }
 
+  function preencherFormularioFinanceiro(item) {
+    campoProduto.value = item?.product || "";
+    campoValor.value = item ? String(Number(item.value) || 0) : "";
+    campoParcelas.value = item ? String(Math.max(1, item.installments || 1)) : "1";
+    campoDescricao.value = item?.description || "";
+  }
+
+  function configurarModalFinanceiro(modo, tipo, item = null) {
+    tipoModalAtual = tipo;
+    modoModalFinanceiro = modo;
+    itemEdicaoAtualId = item?.id || "";
+
+    if (modo === "editar" && item) {
+      tituloModal.textContent = `Editar item - ${obterTituloFinanceiro(tipo)}`;
+      if (botaoSalvarFinanceiro) botaoSalvarFinanceiro.textContent = "Salvar alterações";
+      if (botaoExcluirFinanceiro) botaoExcluirFinanceiro.classList.remove("d-none");
+      preencherFormularioFinanceiro(item);
+      return;
+    }
+
+    tituloModal.textContent = `Adicionar item - ${obterTituloFinanceiro(tipo)}`;
+    if (botaoSalvarFinanceiro) botaoSalvarFinanceiro.textContent = "Salvar produto";
+    if (botaoExcluirFinanceiro) botaoExcluirFinanceiro.classList.add("d-none");
+    formFinanceiro.reset();
+    campoParcelas.value = "1";
+    itemEdicaoAtualId = "";
+  }
+
   ["escritorio", "cliente"].forEach((tipo) => {
     const elementos = obterElementosTipo(tipo);
-    document.getElementById(`btn-adicionar-financeiro-${tipo}`).onclick = () => {
-      tipoModalAtual = tipo;
-      tituloModal.textContent = `Adicionar item - ${obterTituloFinanceiro(tipo)}`;
-      formFinanceiro.reset();
-      campoParcelas.value = "1";
+    const botaoAdicionar = document.getElementById(`btn-adicionar-financeiro-${tipo}`);
+    const botaoEditar = document.getElementById(`btn-editar-financeiro-${tipo}`);
+
+    if (botaoAdicionar) {
+      botaoAdicionar.disabled = !podeGerenciarFinanceiro;
+      botaoAdicionar.classList.toggle("d-none", !podeGerenciarFinanceiro);
+    }
+    if (botaoEditar) {
+      botaoEditar.disabled = !podeGerenciarFinanceiro;
+      botaoEditar.classList.toggle("d-none", !podeGerenciarFinanceiro);
+    }
+    botaoAdicionar.onclick = () => {
+      if (!podeGerenciarFinanceiro) return;
+      configurarModalFinanceiro("adicionar", tipo);
+      modalCadastro.show();
+    };
+
+    botaoEditar.onclick = () => {
+      if (!podeGerenciarFinanceiro) return;
+      const item = obterItemSelecionado(tipo);
+      if (!item) {
+        alert("Selecione ou cadastre um produto antes de editar.");
+        return;
+      }
+      configurarModalFinanceiro("editar", tipo, item);
       modalCadastro.show();
     };
 
@@ -579,17 +649,20 @@ function configurarPainelFinanceiro(chamado) {
     };
 
     elementos.produto.onchange = () => {
+      if (!podeGerenciarFinanceiro) return;
       selecoes[tipo].produtoId = elementos.produto.value;
       selecoes[tipo].parcelaIndice = "0";
       renderizarTipo(tipo);
     };
 
     elementos.parcela.onchange = () => {
+      if (!podeGerenciarFinanceiro) return;
       selecoes[tipo].parcelaIndice = elementos.parcela.value;
       renderizarTipo(tipo);
     };
 
     elementos.parcelaPaga.onchange = async () => {
+      if (!podeGerenciarFinanceiro) return;
       const item = obterItemSelecionado(tipo);
       const indiceParcela = parseInt(selecoes[tipo].parcelaIndice, 10);
       if (!item || Number.isNaN(indiceParcela)) {
@@ -610,6 +683,7 @@ function configurarPainelFinanceiro(chamado) {
     };
 
     elementos.descricao.onblur = async () => {
+      if (!podeGerenciarFinanceiro) return;
       const item = obterItemSelecionado(tipo);
       if (!item) return;
       const novaDescricao = elementos.descricao.value.trim();
@@ -633,6 +707,7 @@ function configurarPainelFinanceiro(chamado) {
 
   formFinanceiro.onsubmit = async (evento) => {
     evento.preventDefault();
+    if (!podeGerenciarFinanceiro) return;
     const produto = campoProduto.value.trim();
     const valor = Number(campoValor.value);
     const parcelas = parseInt(campoParcelas.value, 10);
@@ -640,25 +715,55 @@ function configurarPainelFinanceiro(chamado) {
 
     if (!produto || !Number.isFinite(valor) || valor < 0 || !Number.isFinite(parcelas) || parcelas < 1) return;
 
-    const item = normalizarItemFinanceiro({
-      id: `financeiro-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      product: produto,
-      value: valor,
-      installments: parcelas,
-      description: descricao,
-      paidInstallments: Array.from({ length: parcelas }, () => false),
-    });
+    const colecao = obterColecaoFinanceira(chamado, tipoModalAtual);
+    const itemExistente = modoModalFinanceiro === "editar"
+      ? colecao.find((itemAtual) => itemAtual.id === itemEdicaoAtualId)
+      : null;
 
-    obterColecaoFinanceira(chamado, tipoModalAtual).push(item);
+    let item = itemExistente;
+    let snapshotAnterior = null;
+
+    if (itemExistente) {
+      snapshotAnterior = {
+        product: itemExistente.product,
+        value: itemExistente.value,
+        installments: itemExistente.installments,
+        description: itemExistente.description,
+        paidInstallments: [...(itemExistente.paidInstallments || [])],
+      };
+      itemExistente.product = produto;
+      itemExistente.value = valor;
+      itemExistente.installments = parcelas;
+      itemExistente.description = descricao;
+      itemExistente.paidInstallments = criarParcelasFinanceiras(parcelas, itemExistente.paidInstallments);
+    } else {
+      item = normalizarItemFinanceiro({
+        id: `financeiro-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        product: produto,
+        value: valor,
+        installments: parcelas,
+        description: descricao,
+        paidInstallments: Array.from({ length: parcelas }, () => false),
+      });
+      colecao.push(item);
+    }
+
     selecoes[tipoModalAtual].produtoId = item.id;
     selecoes[tipoModalAtual].parcelaIndice = "0";
 
     try {
       await persistirFinanceiro();
     } catch (erro) {
-      const colecao = obterColecaoFinanceira(chamado, tipoModalAtual);
-      const indice = colecao.findIndex((registro) => registro.id === item.id);
-      if (indice >= 0) colecao.splice(indice, 1);
+      if (itemExistente && snapshotAnterior) {
+        itemExistente.product = snapshotAnterior.product;
+        itemExistente.value = snapshotAnterior.value;
+        itemExistente.installments = snapshotAnterior.installments;
+        itemExistente.description = snapshotAnterior.description;
+        itemExistente.paidInstallments = snapshotAnterior.paidInstallments;
+      } else {
+        const indice = colecao.findIndex((registro) => registro.id === item.id);
+        if (indice >= 0) colecao.splice(indice, 1);
+      }
       alert(erro.message || "Não foi possível salvar o item financeiro.");
       return;
     }
@@ -667,8 +772,39 @@ function configurarPainelFinanceiro(chamado) {
     modalCadastro.hide();
     formFinanceiro.reset();
   };
-}
 
+  if (botaoExcluirFinanceiro) {
+    botaoExcluirFinanceiro.onclick = async () => {
+      if (!podeGerenciarFinanceiro) return;
+      if (modoModalFinanceiro !== "editar" || !itemEdicaoAtualId) return;
+
+      const colecao = obterColecaoFinanceira(chamado, tipoModalAtual);
+      const indice = colecao.findIndex((itemAtual) => itemAtual.id === itemEdicaoAtualId);
+      if (indice < 0) return;
+      if (!window.confirm("Deseja excluir este item financeiro?")) return;
+
+      const [itemRemovido] = colecao.splice(indice, 1);
+      const proximoItem = colecao[0] || null;
+      selecoes[tipoModalAtual].produtoId = proximoItem?.id || "";
+      selecoes[tipoModalAtual].parcelaIndice = proximoItem ? "0" : "";
+
+      try {
+        await persistirFinanceiro();
+      } catch (erro) {
+        colecao.splice(indice, 0, itemRemovido);
+        selecoes[tipoModalAtual].produtoId = itemRemovido.id;
+        selecoes[tipoModalAtual].parcelaIndice = "0";
+        renderizarTipo(tipoModalAtual);
+        alert(erro.message || "Não foi possível excluir o item financeiro.");
+        return;
+      }
+
+      renderizarTipo(tipoModalAtual);
+      modalCadastro.hide();
+      formFinanceiro.reset();
+    };
+  }
+}
 function obterUsuarioSalvo() {
   try {
     const dados = localStorage.getItem(CHAVE_STORAGE_LOGIN);
@@ -805,7 +941,7 @@ function preencherCabecalhoChamado(chamado) {
         <p class="mb-1"><strong>Nº Processo:</strong> ${chamado.processNumber || "Sem processo"}</p>
         <p class="mb-0"><strong>Parceria:</strong> ${parceria}</p>
       </div>
-      <div class="d-flex flex-column align-items-end gap-1">
+      <div class="d-flex flex-column align-items-end gap-1 ms-auto text-end">
         ${createPriorityBadge(chamado.priority).outerHTML}
         <span class="badge bg-light text-dark border">Aberto em ${chamado.openedAt}</span>
         <span class="badge bg-secondary badge-role">Última atualização: ${chamado.lastUpdate}</span>
