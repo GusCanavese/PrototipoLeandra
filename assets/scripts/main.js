@@ -1,7 +1,6 @@
-const API_BASE_URL = `${window.location.origin}/api`;
+const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
 const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
-const ID_INSTANCIA_ABA = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
@@ -221,8 +220,7 @@ async function carregarChamadosSalvos(opcoes = {}) {
 
 async function carregarDetalheChamado(idChamado) {
   if (!idChamado) return null;
-  const chamado = await requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`);
-  return garantirFinanceiroChamado(chamado);
+  return requisicaoApi(`/chamados/${encodeURIComponent(idChamado)}`);
 }
 
 function lerCacheSessao(chave) {
@@ -317,16 +315,15 @@ function erroDeQuotaStorage(erro) {
 }
 
 async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = true) {
-  const chamadosNormalizados = chamadosAtualizados.map((chamado) => garantirFinanceiroChamado(chamado));
   try {
     await requisicaoApi("/chamados", {
       method: "PUT",
-      body: JSON.stringify(chamadosNormalizados),
+      body: JSON.stringify(chamadosAtualizados),
     });
   } catch (erro) {
     if (!erroDeQuotaStorage(erro)) throw erro;
 
-    const chamadosCompactados = removerConteudoAnexos(chamadosNormalizados);
+    const chamadosCompactados = removerConteudoAnexos(chamadosAtualizados);
     try {
       await requisicaoApi("/chamados", {
         method: "PUT",
@@ -346,16 +343,15 @@ async function salvarChamados(chamadosAtualizados = chamados, atualizarTela = tr
 function notificarAtualizacaoChamados() {
   if (typeof BroadcastChannel !== "undefined") {
     const canal = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
-    canal.postMessage({ atualizadoEm: Date.now(), origem: ID_INSTANCIA_ABA });
+    canal.postMessage({ atualizadoEm: Date.now() });
     canal.close();
   }
 }
 
 async function salvarChamadoIndividual(chamado) {
-  const chamadoNormalizado = garantirFinanceiroChamado(chamado);
   await requisicaoApi(`/chamados/${encodeURIComponent(chamado.id)}`, {
     method: "PUT",
-    body: JSON.stringify(chamadoNormalizado),
+    body: JSON.stringify(chamado),
   });
   invalidarCacheChamados();
   notificarAtualizacaoChamados();
@@ -367,306 +363,6 @@ async function excluirChamadoIndividual(idChamado) {
   });
   invalidarCacheChamados();
   notificarAtualizacaoChamados();
-}
-
-function criarParcelasFinanceiras(totalParcelas, parcelasExistentes = []) {
-  const quantidade = Math.max(1, parseInt(totalParcelas, 10) || 1);
-  return Array.from({ length: quantidade }, (_, indice) => Boolean(parcelasExistentes[indice]));
-}
-
-function normalizarItemFinanceiro(item = {}, indice = 0) {
-  const totalParcelas = Math.max(1, parseInt(item.installments ?? item.parcelas, 10) || 1);
-  const valor = Number(item.value ?? item.valor ?? 0);
-  return {
-    id: item.id || `financeiro-${Date.now()}-${indice}-${Math.random().toString(36).slice(2, 8)}`,
-    product: String(item.product ?? item.produto ?? "").trim(),
-    value: Number.isFinite(valor) ? valor : 0,
-    installments: totalParcelas,
-    description: String(item.description ?? item.descricao ?? "").trim(),
-    paidInstallments: criarParcelasFinanceiras(totalParcelas, item.paidInstallments ?? item.parcelasPagas ?? []),
-  };
-}
-
-function normalizarFinanceiroColecao(itens = []) {
-  if (!Array.isArray(itens)) return [];
-  return itens.map((item, indice) => normalizarItemFinanceiro(item, indice)).filter((item) => item.product);
-}
-
-function garantirFinanceiroChamado(chamado) {
-  if (!chamado || typeof chamado !== "object") return chamado;
-  chamado.financialOffice = normalizarFinanceiroColecao(chamado.financialOffice ?? chamado.financeiro_escritorio);
-  chamado.financialClient = normalizarFinanceiroColecao(chamado.financialClient ?? chamado.financeiro_cliente);
-  return chamado;
-}
-
-function formatarMoeda(valor) {
-  const numero = Number(valor) || 0;
-  return numero.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function calcularValorRestanteFinanceiro(item) {
-  if (!item) return 0;
-  const totalParcelas = Math.max(1, item.installments || 1);
-  const valorParcela = (Number(item.value) || 0) / totalParcelas;
-  const pagas = (item.paidInstallments || []).filter(Boolean).length;
-  return Math.max(0, (totalParcelas - pagas) * valorParcela);
-}
-
-function calcularValorRestanteTotalFinanceiro(itens = []) {
-  return (itens || []).reduce((total, item) => total + calcularValorRestanteFinanceiro(item), 0);
-}
-
-function obterTituloFinanceiro(tipo) {
-  return tipo === "escritorio" ? "Pago pelo Escritório" : "Pago pelo Cliente";
-}
-
-function obterColecaoFinanceira(chamado, tipo) {
-  garantirFinanceiroChamado(chamado);
-  return tipo === "escritorio" ? chamado.financialOffice : chamado.financialClient;
-}
-
-function obterResumoParcelas(item) {
-  const totalParcelas = Math.max(1, item.installments || 1);
-  const pagas = (item.paidInstallments || []).filter(Boolean).length;
-  return `${pagas}/${totalParcelas} parcela(s) paga(s)`;
-}
-
-function abrirModalListaFinanceira(chamado, tipo) {
-  const modalElemento = document.getElementById("modal-financeiro-lista");
-  const titulo = document.getElementById("titulo-modal-financeiro-lista");
-  const conteudo = document.getElementById("conteudo-modal-financeiro-lista");
-  if (!modalElemento || !titulo || !conteudo || typeof bootstrap === "undefined") return;
-
-  const itens = obterColecaoFinanceira(chamado, tipo);
-  titulo.textContent = obterTituloFinanceiro(tipo);
-  conteudo.innerHTML = itens.length
-    ? itens
-        .map((item) => {
-          const parcelasHtml = (item.paidInstallments || [])
-            .map((paga, indice) => {
-              const classe = paga ? "financeiro-badge-pago" : "financeiro-badge-pendente";
-              const texto = paga ? "Paga" : "Pendente";
-              return `<span class="badge ${classe} me-2 mb-2">Parcela ${indice + 1}: ${texto}</span>`;
-            })
-            .join("");
-          return `
-            <div class="financeiro-lista-item">
-              <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
-                <div>
-                  <h3 class="h6 mb-1">${item.product}</h3>
-                  <p class="mb-1"><strong>Valor:</strong> ${formatarMoeda(item.value)}</p>
-                  <p class="mb-1"><strong>Parcelas:</strong> ${item.installments}</p>
-                  <p class="mb-0"><strong>Valor restante:</strong> ${formatarMoeda(calcularValorRestanteFinanceiro(item))}</p>
-                </div>
-                <span class="badge bg-light text-dark border">${obterResumoParcelas(item)}</span>
-              </div>
-              <p class="text-muted mt-3 mb-2">${item.description || "Sem descrição."}</p>
-              <div>${parcelasHtml}</div>
-            </div>
-          `;
-        })
-        .join("")
-    : '<div class="alert alert-secondary mb-0">Nenhum produto registrado nesta seção.</div>';
-
-  bootstrap.Modal.getOrCreateInstance(modalElemento).show();
-}
-
-function configurarPainelFinanceiro(chamado) {
-  garantirFinanceiroChamado(chamado);
-
-  const modalCadastroElemento = document.getElementById("modal-financeiro");
-  const modalListaElemento = document.getElementById("modal-financeiro-lista");
-  const formFinanceiro = document.getElementById("form-financeiro");
-  if (!formFinanceiro || !modalCadastroElemento || !modalListaElemento || typeof bootstrap === "undefined") return;
-
-  const modalCadastro = bootstrap.Modal.getOrCreateInstance(modalCadastroElemento);
-  bootstrap.Modal.getOrCreateInstance(modalListaElemento);
-
-  const tituloModal = document.getElementById("titulo-modal-financeiro");
-  const campoProduto = document.getElementById("modal-financeiro-produto");
-  const campoValor = document.getElementById("modal-financeiro-valor");
-  const campoParcelas = document.getElementById("modal-financeiro-parcelas");
-  const campoDescricao = document.getElementById("modal-financeiro-descricao");
-  const selecoes = {
-    escritorio: { produtoId: "", parcelaIndice: "" },
-    cliente: { produtoId: "", parcelaIndice: "" },
-  };
-  let tipoModalAtual = "escritorio";
-
-  function obterElementosTipo(tipo) {
-    return {
-      produto: document.getElementById(`financeiro-${tipo}-produto`),
-      valor: document.getElementById(`financeiro-${tipo}-valor`),
-      parcela: document.getElementById(`financeiro-${tipo}-parcela`),
-      parcelaPaga: document.getElementById(`financeiro-${tipo}-parcela-paga`),
-      descricao: document.getElementById(`financeiro-${tipo}-descricao`),
-      restante: document.getElementById(`financeiro-${tipo}-restante`),
-    };
-  }
-
-  function obterItemSelecionado(tipo) {
-    const itens = obterColecaoFinanceira(chamado, tipo);
-    if (!itens.length) return null;
-    const selecaoAtual = selecoes[tipo].produtoId;
-    return itens.find((item) => item.id === selecaoAtual) || itens[0];
-  }
-
-  function renderizarTipo(tipo) {
-    const elementos = obterElementosTipo(tipo);
-    if (!elementos.produto) return;
-
-    const itens = obterColecaoFinanceira(chamado, tipo);
-    const itemSelecionado = obterItemSelecionado(tipo);
-    const produtoIdSelecionado = itemSelecionado?.id || "";
-    selecoes[tipo].produtoId = produtoIdSelecionado;
-
-    elementos.produto.innerHTML = itens.length
-      ? itens.map((item) => `<option value="${item.id}">${item.product}</option>`).join("")
-      : '<option value="">Nenhum produto cadastrado</option>';
-    elementos.produto.value = produtoIdSelecionado;
-    elementos.produto.disabled = !itens.length;
-
-    if (!itemSelecionado) {
-      elementos.valor.textContent = formatarMoeda(0);
-      elementos.parcela.innerHTML = '<option value="">Selecione</option>';
-      elementos.parcela.disabled = true;
-      elementos.parcelaPaga.checked = false;
-      elementos.parcelaPaga.disabled = true;
-      elementos.descricao.value = "";
-      elementos.descricao.disabled = true;
-      elementos.restante.textContent = formatarMoeda(calcularValorRestanteTotalFinanceiro(itens));
-      return;
-    }
-
-    elementos.valor.textContent = formatarMoeda(itemSelecionado.value);
-    elementos.descricao.value = itemSelecionado.description || "";
-    elementos.descricao.disabled = false;
-    elementos.restante.textContent = formatarMoeda(calcularValorRestanteTotalFinanceiro(itens));
-
-    const parcelaIndiceAtual = selecoes[tipo].parcelaIndice === ""
-      ? "0"
-      : String(Math.min(parseInt(selecoes[tipo].parcelaIndice, 10) || 0, itemSelecionado.installments - 1));
-
-    selecoes[tipo].parcelaIndice = parcelaIndiceAtual;
-    elementos.parcela.innerHTML = Array.from({ length: itemSelecionado.installments }, (_, indice) => {
-      const status = itemSelecionado.paidInstallments?.[indice] ? "paga" : "pendente";
-      return `<option value="${indice}">Parcela ${indice + 1} (${status})</option>`;
-    }).join("");
-    elementos.parcela.disabled = false;
-    elementos.parcela.value = parcelaIndiceAtual;
-    elementos.parcelaPaga.disabled = false;
-    elementos.parcelaPaga.checked = Boolean(itemSelecionado.paidInstallments?.[parseInt(parcelaIndiceAtual, 10) || 0]);
-  }
-
-  async function persistirFinanceiro() {
-    chamado.lastUpdate = formatarDataHoraAtual();
-    await salvarChamadoIndividual(chamado);
-    preencherCabecalhoChamado(chamado);
-  }
-
-  ["escritorio", "cliente"].forEach((tipo) => {
-    const elementos = obterElementosTipo(tipo);
-    document.getElementById(`btn-adicionar-financeiro-${tipo}`).onclick = () => {
-      tipoModalAtual = tipo;
-      tituloModal.textContent = `Adicionar item - ${obterTituloFinanceiro(tipo)}`;
-      formFinanceiro.reset();
-      campoParcelas.value = "1";
-      modalCadastro.show();
-    };
-
-    document.getElementById(`btn-ver-mais-${tipo}`).onclick = () => {
-      abrirModalListaFinanceira(chamado, tipo);
-    };
-
-    elementos.produto.onchange = () => {
-      selecoes[tipo].produtoId = elementos.produto.value;
-      selecoes[tipo].parcelaIndice = "0";
-      renderizarTipo(tipo);
-    };
-
-    elementos.parcela.onchange = () => {
-      selecoes[tipo].parcelaIndice = elementos.parcela.value;
-      renderizarTipo(tipo);
-    };
-
-    elementos.parcelaPaga.onchange = async () => {
-      const item = obterItemSelecionado(tipo);
-      const indiceParcela = parseInt(selecoes[tipo].parcelaIndice, 10);
-      if (!item || Number.isNaN(indiceParcela)) {
-        elementos.parcelaPaga.checked = false;
-        return;
-      }
-      item.paidInstallments = criarParcelasFinanceiras(item.installments, item.paidInstallments);
-      item.paidInstallments[indiceParcela] = elementos.parcelaPaga.checked;
-      try {
-        await persistirFinanceiro();
-      } catch (erro) {
-        item.paidInstallments[indiceParcela] = !elementos.parcelaPaga.checked;
-        renderizarTipo(tipo);
-        alert(erro.message || "Não foi possível atualizar o pagamento da parcela.");
-        return;
-      }
-      renderizarTipo(tipo);
-    };
-
-    elementos.descricao.onblur = async () => {
-      const item = obterItemSelecionado(tipo);
-      if (!item) return;
-      const novaDescricao = elementos.descricao.value.trim();
-      if ((item.description || "") === novaDescricao) return;
-
-      const descricaoAnterior = item.description || "";
-      item.description = novaDescricao;
-      try {
-        await persistirFinanceiro();
-      } catch (erro) {
-        item.description = descricaoAnterior;
-        renderizarTipo(tipo);
-        alert(erro.message || "Não foi possível salvar a descrição do produto.");
-        return;
-      }
-      renderizarTipo(tipo);
-    };
-
-    renderizarTipo(tipo);
-  });
-
-  formFinanceiro.onsubmit = async (evento) => {
-    evento.preventDefault();
-    const produto = campoProduto.value.trim();
-    const valor = Number(campoValor.value);
-    const parcelas = parseInt(campoParcelas.value, 10);
-    const descricao = campoDescricao.value.trim();
-
-    if (!produto || !Number.isFinite(valor) || valor < 0 || !Number.isFinite(parcelas) || parcelas < 1) return;
-
-    const item = normalizarItemFinanceiro({
-      id: `financeiro-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      product: produto,
-      value: valor,
-      installments: parcelas,
-      description: descricao,
-      paidInstallments: Array.from({ length: parcelas }, () => false),
-    });
-
-    obterColecaoFinanceira(chamado, tipoModalAtual).push(item);
-    selecoes[tipoModalAtual].produtoId = item.id;
-    selecoes[tipoModalAtual].parcelaIndice = "0";
-
-    try {
-      await persistirFinanceiro();
-    } catch (erro) {
-      const colecao = obterColecaoFinanceira(chamado, tipoModalAtual);
-      const indice = colecao.findIndex((registro) => registro.id === item.id);
-      if (indice >= 0) colecao.splice(indice, 1);
-      alert(erro.message || "Não foi possível salvar o item financeiro.");
-      return;
-    }
-
-    renderizarTipo(tipoModalAtual);
-    modalCadastro.hide();
-    formFinanceiro.reset();
-  };
 }
 
 function obterUsuarioSalvo() {
@@ -940,8 +636,6 @@ function registrarFormularioCriacao() {
   const campoParceriaCom = document.getElementById("campo-parceria-com");
   const campoCliente = document.getElementById("campo-cliente");
   const campoLoginCliente = document.getElementById("campo-login-cliente");
-  const campoValorInicial = document.getElementById("campo-valor-inicial");
-  const campoParcelasIniciais = document.getElementById("campo-parcelas-iniciais");
   const alertaCriacao = document.getElementById("alerta-criacao");
   const botaoCadastrarCliente = document.getElementById("btn-cadastrar-cliente");
   const usuarioEhCliente = usuarioAutenticado?.tipo === "Cliente";
@@ -1018,28 +712,7 @@ function registrarFormularioCriacao() {
 
     const dataAtual = new Date();
     const dataFormatada = dataAtual.toLocaleString("pt-BR");
-    const resumo = document.getElementById("campo-resumo").value.trim();
     const descricao = document.getElementById("campo-descricao").value.trim();
-    const valorInicialInformado = campoValorInicial?.value?.trim() || "";
-    const parcelasIniciaisInformadas = campoParcelasIniciais?.value?.trim() || "";
-    const valorInicial = valorInicialInformado === "" ? null : Number(campoValorInicial.value);
-    const parcelasIniciais = parcelasIniciaisInformadas === "" ? null : parseInt(campoParcelasIniciais.value, 10);
-
-    if ((valorInicialInformado && !parcelasIniciaisInformadas) || (!valorInicialInformado && parcelasIniciaisInformadas)) {
-      if (alertaCriacao) {
-        alertaCriacao.className = "alert alert-warning";
-        alertaCriacao.textContent = "Preencha valor e parcelas juntos para criar o financeiro inicial.";
-      }
-      return;
-    }
-
-    if (valorInicialInformado && (!Number.isFinite(valorInicial) || valorInicial < 0 || !Number.isFinite(parcelasIniciais) || parcelasIniciais < 1)) {
-      if (alertaCriacao) {
-        alertaCriacao.className = "alert alert-warning";
-        alertaCriacao.textContent = "Informe um valor válido e pelo menos 1 parcela.";
-      }
-      return;
-    }
 
     const arquivoAnexado = document.getElementById("campo-anexo").files[0];
     const anexoInicial = arquivoAnexado
@@ -1050,7 +723,7 @@ function registrarFormularioCriacao() {
       id: "",
       client: document.getElementById("campo-cliente").value.trim(),
       clienteLogin: document.getElementById("campo-login-cliente").value.trim(),
-      summary: resumo,
+      summary: document.getElementById("campo-resumo").value.trim(),
       description: descricao,
       priority: document.getElementById("campo-prioridade").value,
       status: document.getElementById("campo-status").value,
@@ -1068,18 +741,6 @@ function registrarFormularioCriacao() {
           attachments: anexoInicial,
         },
       ],
-      financialOffice: [],
-      financialClient: valorInicialInformado
-        ? [
-            normalizarItemFinanceiro({
-              product: resumo,
-              value: valorInicial,
-              installments: parcelasIniciais,
-              description: descricao,
-              paidInstallments: Array.from({ length: parcelasIniciais }, () => false),
-            }),
-          ]
-        : [],
     };
 
     const clienteVinculado = obterClientePorLogin(novoChamado.clienteLogin);
@@ -1204,7 +865,6 @@ async function carregarDetalhesChamado() {
   preencherCabecalhoChamado(chamado);
   preencherHistorico(chamado);
   preencherAnexos(chamado);
-  configurarPainelFinanceiro(chamado);
   registrarFormularioAtualizacao(chamado);
 }
 
@@ -1445,8 +1105,7 @@ async function inicializar() {
 
   if (typeof BroadcastChannel !== "undefined") {
     const canalAtualizacao = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
-    canalAtualizacao.addEventListener("message", async (evento) => {
-      if (evento.data?.origem === ID_INSTANCIA_ABA) return;
+    canalAtualizacao.addEventListener("message", async () => {
       await carregarChamadosSalvos({ usarCache: false, revalidar: false });
       atualizarTelaComChamadosAtualizados();
     });
