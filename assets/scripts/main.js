@@ -99,6 +99,15 @@ function renderizarAnexosComDownload(anexos = []) {
     .join(", ");
 }
 
+function escaparHtml(valor) {
+  return String(valor ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
   const incluirBancoNoHeader = opcoesInternas.incluirBancoNoHeader !== false;
 
@@ -435,6 +444,33 @@ function usuarioPodeGerenciarFinanceiro() {
   return ["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo);
 }
 
+function obterRotuloEscopoFinanceiro(tipo) {
+  return tipo === "escritorio" ? "Pago pelo Escritório" : "Pago pelo Cliente";
+}
+
+function obterMensagemEventoFinanceiro(acao) {
+  if (acao === "update") return "Registro financeiro atualizado.";
+  if (acao === "delete") return "Registro financeiro removido.";
+  return "Registro financeiro adicionado.";
+}
+
+function criarAtualizacaoFinanceira(tipo, item, acao = "create") {
+  if (!item) return null;
+  return {
+    author: "Sistema",
+    message: obterMensagemEventoFinanceiro(acao),
+    date: formatarDataHoraAtual(),
+    attachments: [],
+    financialEvent: {
+      action: acao,
+      scope: tipo,
+      product: item.product || "",
+      value: Number(item.value) || 0,
+      installments: Math.max(1, Number(item.installments) || 1),
+    },
+  };
+}
+
 function obterResumoParcelas(item) {
   const totalParcelas = Math.max(1, item.installments || 1);
   const pagas = (item.paidInstallments || []).filter(Boolean).length;
@@ -722,6 +758,7 @@ function configurarPainelFinanceiro(chamado) {
 
     let item = itemExistente;
     let snapshotAnterior = null;
+    let atualizacaoFinanceira = null;
 
     if (itemExistente) {
       snapshotAnterior = {
@@ -736,6 +773,7 @@ function configurarPainelFinanceiro(chamado) {
       itemExistente.installments = parcelas;
       itemExistente.description = descricao;
       itemExistente.paidInstallments = criarParcelasFinanceiras(parcelas, itemExistente.paidInstallments);
+      atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, itemExistente, "update");
     } else {
       item = normalizarItemFinanceiro({
         id: `financeiro-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -746,14 +784,20 @@ function configurarPainelFinanceiro(chamado) {
         paidInstallments: Array.from({ length: parcelas }, () => false),
       });
       colecao.push(item);
+      atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, item, "create");
     }
 
     selecoes[tipoModalAtual].produtoId = item.id;
     selecoes[tipoModalAtual].parcelaIndice = "0";
+    if (atualizacaoFinanceira) {
+      chamado.updates = chamado.updates || [];
+      chamado.updates.unshift(atualizacaoFinanceira);
+    }
 
     try {
       await persistirFinanceiro();
     } catch (erro) {
+      if (atualizacaoFinanceira) chamado.updates.shift();
       if (itemExistente && snapshotAnterior) {
         itemExistente.product = snapshotAnterior.product;
         itemExistente.value = snapshotAnterior.value;
@@ -785,12 +829,18 @@ function configurarPainelFinanceiro(chamado) {
 
       const [itemRemovido] = colecao.splice(indice, 1);
       const proximoItem = colecao[0] || null;
+      const atualizacaoFinanceira = criarAtualizacaoFinanceira(tipoModalAtual, itemRemovido, "delete");
       selecoes[tipoModalAtual].produtoId = proximoItem?.id || "";
       selecoes[tipoModalAtual].parcelaIndice = proximoItem ? "0" : "";
+      if (atualizacaoFinanceira) {
+        chamado.updates = chamado.updates || [];
+        chamado.updates.unshift(atualizacaoFinanceira);
+      }
 
       try {
         await persistirFinanceiro();
       } catch (erro) {
+        if (atualizacaoFinanceira) chamado.updates.shift();
         colecao.splice(indice, 0, itemRemovido);
         selecoes[tipoModalAtual].produtoId = itemRemovido.id;
         selecoes[tipoModalAtual].parcelaIndice = "0";
@@ -956,7 +1006,12 @@ function preencherHistorico(chamado) {
   if (!listaHistorico) return;
   listaHistorico.innerHTML = "";
 
-  chamado.updates.forEach((u) => {
+  const atualizacoesVisiveis = (chamado.updates || []).filter((u) => {
+    if (usuarioAutenticado?.tipo !== "Cliente") return true;
+    return u?.financialEvent?.scope !== "escritorio";
+  });
+
+  atualizacoesVisiveis.forEach((u) => {
     const anexos = (u.attachments || []).length
       ? `<div class="small mt-2"><strong>Anexos:</strong> ${renderizarAnexosComDownload(u.attachments || [])}</div>`
       : "";
@@ -965,6 +1020,140 @@ function preencherHistorico(chamado) {
     item.innerHTML = `<div class="d-flex justify-content-between"><strong>${u.author}</strong><span class="small text-muted">${u.date}</span></div><p class="mb-1">${u.message}</p>${anexos}`;
     listaHistorico.appendChild(item);
   });
+}
+
+function configurarImpressaoHistorico(chamado) {
+  const botaoImprimir = document.getElementById("btn-imprimir-historico");
+  if (!botaoImprimir) return;
+
+  const podeImprimir = ["Técnico", "Administrador"].includes(usuarioAutenticado?.tipo);
+  botaoImprimir.classList.toggle("d-none", !podeImprimir);
+  if (!podeImprimir) {
+    botaoImprimir.onclick = null;
+    return;
+  }
+
+  botaoImprimir.onclick = () => {
+    const ultimasAtualizacoes = (chamado.updates || []).slice(0, 10);
+    const itensHistorico = ultimasAtualizacoes.length
+      ? ultimasAtualizacoes
+          .map((atualizacao, indice) => {
+            const anexos = (atualizacao.attachments || [])
+              .map(normalizarAnexo)
+              .filter(Boolean);
+            const eventoFinanceiro = atualizacao.financialEvent;
+            const anexosHtml = anexos.length
+              ? `
+                <div class="anexos">
+                  <strong>Anexos:</strong> ${anexos.map((anexo) => escaparHtml(anexo.name)).join(", ")}
+                </div>
+              `
+              : "";
+            const financeiroHtml = eventoFinanceiro
+              ? `
+                <div class="anexos">
+                  <strong>Registro financeiro:</strong> ${escaparHtml(obterRotuloEscopoFinanceiro(eventoFinanceiro.scope || "cliente"))}<br />
+                  <strong>Produto:</strong> ${escaparHtml(eventoFinanceiro.product || "-")}<br />
+                  <strong>Valor:</strong> ${escaparHtml(formatarMoeda(eventoFinanceiro.value || 0))}<br />
+                  <strong>Parcelas:</strong> ${escaparHtml(String(eventoFinanceiro.installments || 1))}
+                </div>
+              `
+              : "";
+
+            return `
+              <section class="item">
+                <div class="item-topo">
+                  <strong>${escaparHtml(atualizacao.author || "Sistema")}</strong>
+                  <span>${escaparHtml(atualizacao.date || "-")}</span>
+                </div>
+                <div>${escaparHtml(atualizacao.message || "")}</div>
+                ${anexosHtml}
+                ${financeiroHtml}
+                <small>Atualização ${indice + 1}</small>
+              </section>
+            `;
+          })
+          .join("")
+      : '<p>Nenhuma atualização registrada.</p>';
+
+    const janelaImpressao = window.open("", "_blank", "width=900,height=700");
+    if (!janelaImpressao) {
+      alert("Não foi possível abrir a janela de impressão.");
+      return;
+    }
+
+    const htmlRelatorio = `
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8" />
+          <title>Relatório do Chamado ${escaparHtml(chamado.id || "")}</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              color: #1f2937;
+              margin: 32px;
+              line-height: 1.5;
+            }
+            h1, h2, p {
+              margin: 0 0 12px;
+            }
+            .meta {
+              margin-bottom: 24px;
+            }
+            .item {
+              border: 1px solid #d1d5db;
+              border-radius: 8px;
+              padding: 12px 14px;
+              margin-bottom: 12px;
+              page-break-inside: avoid;
+            }
+            .item-topo {
+              display: flex;
+              justify-content: space-between;
+              gap: 12px;
+              margin-bottom: 8px;
+              font-size: 14px;
+            }
+            small {
+              display: block;
+              margin-top: 10px;
+              color: #6b7280;
+            }
+            .anexos {
+              margin-top: 10px;
+              font-size: 14px;
+            }
+            @media print {
+              body {
+                margin: 18px;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Relatório de Atualizações</h1>
+          <div class="meta">
+            <p><strong>Chamado:</strong> ${escaparHtml(chamado.id || "-")}</p>
+            <p><strong>Cliente:</strong> ${escaparHtml(chamado.client || "-")}</p>
+            <p><strong>Resumo:</strong> ${escaparHtml(chamado.summary || "-")}</p>
+            <p><strong>Status:</strong> ${escaparHtml(chamado.status || "-")}</p>
+            <p><strong>Gerado em:</strong> ${escaparHtml(formatarDataHoraAtual())}</p>
+            <p><strong>Conteúdo:</strong> 10 últimas atualizações</p>
+          </div>
+          <h2>Histórico</h2>
+          ${itensHistorico}
+        </body>
+      </html>
+    `;
+    janelaImpressao.document.open();
+    janelaImpressao.document.write(htmlRelatorio);
+    janelaImpressao.document.close();
+    janelaImpressao.focus();
+    janelaImpressao.onload = () => {
+      janelaImpressao.print();
+    };
+  };
 }
 
 function preencherAnexos(chamado) {
@@ -997,7 +1186,7 @@ function registrarFormularioAtualizacao(chamado) {
     document.getElementById("statusAtualizacao").value = chamado.status;
   }
 
-  form.addEventListener("submit", async (evento) => {
+  form.onsubmit = async (evento) => {
     evento.preventDefault();
     const descricao = document.getElementById("descricaoAtualizacao").value.trim();
     if (!descricao) return;
@@ -1027,9 +1216,9 @@ function registrarFormularioAtualizacao(chamado) {
     preencherHistorico(chamado);
     preencherAnexos(chamado);
     form.reset();
-  });
+  };
 
-  btnConcluir?.addEventListener("click", async () => {
+  if (btnConcluir) btnConcluir.onclick = async () => {
     chamado.status = "Concluído";
     chamado.lastUpdate = formatarDataHoraAtual();
     try {
@@ -1040,9 +1229,9 @@ function registrarFormularioAtualizacao(chamado) {
     }
     preencherCabecalhoChamado(chamado);
     preencherHistorico(chamado);
-  });
+  };
 
-  btnExcluir?.addEventListener("click", async () => {
+  if (btnExcluir) btnExcluir.onclick = async () => {
     try {
       await excluirChamadoIndividual(chamado.id);
     } catch (erro) {
@@ -1050,7 +1239,7 @@ function registrarFormularioAtualizacao(chamado) {
       return;
     }
     window.location.href = usuarioAutenticado?.tipo === "Cliente" ? "cliente.html" : "index.html";
-  });
+  };
 }
 
 function gerarNovoIdChamado() {
@@ -1202,6 +1391,15 @@ function registrarFormularioCriacao() {
           message: descricao,
           date: dataFormatada,
           attachments: anexoInicial,
+          financialEvent: valorInicialInformado
+            ? {
+                action: "create",
+                scope: "cliente",
+                product: resumo,
+                value: valorInicial,
+                installments: parcelasIniciais,
+              }
+            : null,
         },
       ],
       financialOffice: [],
@@ -1339,6 +1537,7 @@ async function carregarDetalhesChamado() {
   }
   preencherCabecalhoChamado(chamado);
   preencherHistorico(chamado);
+  configurarImpressaoHistorico(chamado);
   preencherAnexos(chamado);
   configurarPainelFinanceiro(chamado);
   registrarFormularioAtualizacao(chamado);

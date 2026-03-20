@@ -154,7 +154,12 @@
               class="card-header bg-white d-flex align-items-center justify-content-between"
             >
               <h2 class="h6 mb-0">Histórico de Atualizações</h2>
-              <span class="badge bg-info text-dark badge-role" id="badge-status"></span>
+              <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="btn-imprimir-historico">
+                  Imprimir relatório
+                </button>
+                <span class="badge bg-info text-dark badge-role" id="badge-status"></span>
+              </div>
             </div>
             <div class="card-body">
               <div class="timeline" id="lista-historico"></div>
