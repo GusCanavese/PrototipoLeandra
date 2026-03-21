@@ -6,6 +6,10 @@ const CHAVE_STORAGE_LOGIN = "usuarioAutenticado";
 const CHAVE_STORAGE_BANCO = "bancoProjetoAtivo";
 const CHAVE_CACHE_CHAMADOS = "cacheChamados";
 const CHAVE_CACHE_CLIENTES = "cacheClientes";
+const CHAVE_STORAGE_CHAMADO_ATUAL = "chamadoAtualSelecionado";
+const CHAVE_STORAGE_LOGIN_PRE_CADASTRO = "loginPreCadastroCliente";
+const CHAVE_STORAGE_RETORNO_CADASTRO = "rotaRetornoCadastro";
+const ROTA_PADRAO_POS_CADASTRO = "index.html";
 const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
@@ -47,6 +51,66 @@ function usuarioPodeCriarTipoUsuario(tipo) {
 
 function obterRotuloTipoCadastro() {
   return usuarioEhAdministrador() ? "Cliente ou advogado" : "Cliente";
+}
+
+function obterRotuloAcaoCadastro() {
+  return usuarioEhAdministrador() ? "Cadastrar usuário" : "Cadastrar cliente";
+}
+
+function obterRotuloBotaoSalvarCadastro() {
+  return usuarioEhAdministrador() ? "Salvar usuário" : "Salvar cliente";
+}
+
+function salvarChamadoAtualSelecionado(idChamado) {
+  if (!idChamado) return;
+  sessionStorage.setItem(CHAVE_STORAGE_CHAMADO_ATUAL, idChamado);
+}
+
+function obterChamadoAtualSelecionado() {
+  return sessionStorage.getItem(CHAVE_STORAGE_CHAMADO_ATUAL) || "";
+}
+
+function limparChamadoAtualSelecionado() {
+  sessionStorage.removeItem(CHAVE_STORAGE_CHAMADO_ATUAL);
+}
+
+function salvarLoginPreCadastro(login) {
+  if (!login) return;
+  sessionStorage.setItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO, login);
+}
+
+function obterLoginPreCadastro() {
+  return sessionStorage.getItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO) || "";
+}
+
+function limparLoginPreCadastro() {
+  sessionStorage.removeItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO);
+}
+
+function salvarRotaRetornoCadastro(rota = ROTA_PADRAO_POS_CADASTRO) {
+  sessionStorage.setItem(CHAVE_STORAGE_RETORNO_CADASTRO, rota || ROTA_PADRAO_POS_CADASTRO);
+}
+
+function obterRotaRetornoCadastro() {
+  return sessionStorage.getItem(CHAVE_STORAGE_RETORNO_CADASTRO) || ROTA_PADRAO_POS_CADASTRO;
+}
+
+function limparRotaRetornoCadastro() {
+  sessionStorage.removeItem(CHAVE_STORAGE_RETORNO_CADASTRO);
+}
+
+function abrirDetalhesChamado(idChamado) {
+  if (!idChamado) return;
+  salvarChamadoAtualSelecionado(idChamado);
+  window.location.href = "details.html";
+}
+
+function prepararFluxoCadastroUsuario(opcoes = {}) {
+  const { login = "", retorno = ROTA_PADRAO_POS_CADASTRO } = opcoes;
+  if (login) salvarLoginPreCadastro(login);
+  else limparLoginPreCadastro();
+  salvarRotaRetornoCadastro(retorno);
+  window.location.href = "cadastro-cliente.html";
 }
 
 function configurarAlternadoresSenha() {
@@ -1031,9 +1095,10 @@ function renderChamadosTabela() {
         <td>${chamado.lastUpdate}</td>
         <td>${chamado.openedAt}</td>
         <td class="text-center"></td>
-        <td class="text-end"><a class="btn btn-sm btn-primary" href="details.html?id=${encodeURIComponent(chamado.id)}">Ver</a></td>
+        <td class="text-end"><button type="button" class="btn btn-sm btn-primary" data-abrir-chamado="${escaparHtml(chamado.id)}">Ver</button></td>
       `;
       linha.querySelector("td:nth-child(6)").appendChild(createPriorityBadge(chamado.priority));
+      linha.querySelector("[data-abrir-chamado]")?.addEventListener("click", () => abrirDetalhesChamado(chamado.id));
       corpoTabela.appendChild(linha);
     });
 }
@@ -1060,9 +1125,10 @@ function renderChamadosClienteAbertos() {
           <h3 class="h6 mb-1">${chamado.summary}</h3>
           <p class="mb-1">${chamado.client}</p>
           <p class="small text-muted mb-2">Status: ${chamado.status}</p>
-          <a class="btn btn-primary btn-sm mt-auto" href="details.html?id=${encodeURIComponent(chamado.id)}">Abrir chamado</a>
+          <button type="button" class="btn btn-primary btn-sm mt-auto" data-abrir-chamado="${escaparHtml(chamado.id)}">Abrir chamado</button>
         </div>
       </div>`;
+    item.querySelector("[data-abrir-chamado]")?.addEventListener("click", () => abrirDetalhesChamado(chamado.id));
     lista.appendChild(item);
   });
 }
@@ -1086,11 +1152,12 @@ function renderChamadosAbertos() {
           <div class="ticket-card-coluna-acoes d-flex flex-column align-items-end gap-2">
             <span class="badge bg-light text-dark border">${chamado.status}</span>
             <div class="container-prioridade-card"></div>
-            <a class="btn btn-primary btn-sm" href="details.html?id=${encodeURIComponent(chamado.id)}">Ver</a>
+            <button type="button" class="btn btn-primary btn-sm" data-abrir-chamado="${escaparHtml(chamado.id)}">Ver</button>
           </div>
         </div>
       </div>`;
     coluna.querySelector(".container-prioridade-card").appendChild(createPriorityBadge(chamado.priority));
+    coluna.querySelector("[data-abrir-chamado]")?.addEventListener("click", () => abrirDetalhesChamado(chamado.id));
     grid.appendChild(coluna);
   });
 }
@@ -1431,7 +1498,7 @@ function registrarFormularioCriacao() {
       alertaCriacao.textContent = "Cliente não encontrado para este login. Cadastre o cliente para continuar.";
     }
     botaoCadastrarCliente?.classList.remove("d-none");
-    botaoCadastrarCliente.href = `cadastro-cliente.html?login=${encodeURIComponent(loginInformado)}`;
+    botaoCadastrarCliente.onclick = () => prepararFluxoCadastroUsuario({ login: loginInformado, retorno: "index.html" });
   }
 
   if (!usuarioEhCliente) campoLoginCliente?.addEventListener("blur", validarClienteExistente);
@@ -1556,7 +1623,7 @@ function registrarFormularioCriacao() {
         alertaCriacao.textContent = "Cadastre o cliente antes de abrir o chamado.";
       }
       botaoCadastrarCliente?.classList.remove("d-none");
-      botaoCadastrarCliente.href = `cadastro-cliente.html?login=${encodeURIComponent(novoChamado.clienteLogin)}`;
+      botaoCadastrarCliente.onclick = () => prepararFluxoCadastroUsuario({ login: novoChamado.clienteLogin, retorno: "index.html" });
       return;
     }
 
@@ -1592,7 +1659,7 @@ function registrarFormularioCadastroCliente() {
   const campoLogin = document.getElementById("campo-cadastro-login");
   const campoTipo = document.getElementById("campo-cadastro-tipo");
   const textoAjudaTipo = document.getElementById("texto-ajuda-tipo-cadastro");
-  const loginPreenchido = new URLSearchParams(window.location.search).get("login");
+  const loginPreenchido = obterLoginPreCadastro();
   if (loginPreenchido) campoLogin.value = loginPreenchido;
 
   if (campoTipo) {
@@ -1632,7 +1699,7 @@ function registrarFormularioCadastroCliente() {
     if (credenciaisLogin[novoUsuario.login] || obterClientePorLogin(novoUsuario.login)) {
       if (alerta) {
         alerta.className = "alert alert-danger";
-        alerta.textContent = "Este login já está em uso. Informe outro login.";
+        alerta.textContent = "Usuário já cadastrado no sistema. Informe outro login.";
       }
       return;
     }
@@ -1646,7 +1713,7 @@ function registrarFormularioCadastroCliente() {
     } catch (erro) {
       if (alerta) {
         alerta.className = "alert alert-danger";
-        alerta.textContent = erro.message || "Não foi possível cadastrar o usuário.";
+        alerta.textContent = erro.message || "Não foi possível cadastrar o cliente/usuário.";
       }
       return;
     }
@@ -1658,10 +1725,12 @@ function registrarFormularioCadastroCliente() {
         : "Usuário cadastrado com sucesso.";
     }
 
+    limparLoginPreCadastro();
+    const rotaRetorno = obterRotaRetornoCadastro();
+    limparRotaRetornoCadastro();
+
     setTimeout(() => {
-      window.location.href = tipoSelecionado === "Cliente"
-        ? `create.html?clienteLogin=${encodeURIComponent(novoUsuario.login)}`
-        : "index.html";
+      window.location.href = rotaRetorno || ROTA_PADRAO_POS_CADASTRO;
     }, 800);
   });
 }
@@ -1679,14 +1748,14 @@ function usuarioPodeAcessarChamado(chamado) {
 async function carregarDetalhesChamado() {
   const container = document.getElementById("detalhes-chamado");
   if (!container) return;
-  const id = new URLSearchParams(window.location.search).get("id") || chamados[0]?.id;
+  const id = obterChamadoAtualSelecionado();
   let chamado = chamados.find((c) => c.id === id);
   try {
     chamado = await carregarDetalheChamado(id);
   } catch {
     // fallback para o registro já carregado
   }
-  if (!chamado) {
+  if (!id || !chamado) {
     container.innerHTML = '<div class="alert alert-warning">Chamado não encontrado.</div>';
     return;
   }
@@ -1721,7 +1790,31 @@ function atualizarNomeUsuarioCabecalho() {
 function atualizarAcoesCabecalhoAdministrador() {
   const botoesAdmin = document.querySelectorAll("[data-acao-admin='cadastrar-usuario']");
   const exibir = usuarioPodeCadastrarUsuarios();
-  botoesAdmin.forEach((botao) => botao.classList.toggle("d-none", !exibir));
+  const rotulo = obterRotuloAcaoCadastro();
+  botoesAdmin.forEach((botao) => {
+    botao.classList.toggle("d-none", !exibir);
+    botao.textContent = rotulo;
+    botao.addEventListener("click", (evento) => {
+      evento.preventDefault();
+      prepararFluxoCadastroUsuario({ retorno: window.location.pathname.split("/").pop() || ROTA_PADRAO_POS_CADASTRO });
+    });
+  });
+
+  const tituloCadastro = document.getElementById("titulo-cadastro-usuario");
+  if (tituloCadastro) tituloCadastro.textContent = rotulo;
+
+  const botaoSalvarCadastro = document.getElementById("botao-salvar-cadastro");
+  if (botaoSalvarCadastro) botaoSalvarCadastro.textContent = obterRotuloBotaoSalvarCadastro();
+
+  const tituloPagina = document.querySelector("title");
+  if (tituloPagina && document.getElementById("pagina-cadastro-cliente")) {
+    tituloPagina.textContent = rotulo;
+  }
+
+  const linkVoltarCadastro = document.getElementById("link-voltar-cadastro");
+  if (linkVoltarCadastro) {
+    linkVoltarCadastro.href = obterRotaRetornoCadastro();
+  }
 }
 
 function registrarBotoesTrocaUsuario() {
@@ -1922,10 +2015,11 @@ async function inicializar() {
       avisoCriacao.className = "alert alert-info";
       avisoCriacao.textContent = "Você pode criar chamados para o seu próprio usuário.";
     }
-    const loginClientePredefinido = new URLSearchParams(window.location.search).get("clienteLogin");
+    const loginClientePredefinido = obterLoginPreCadastro();
     if (loginClientePredefinido) {
       const campoLoginCliente = document.getElementById("campo-login-cliente");
       if (campoLoginCliente) campoLoginCliente.value = loginClientePredefinido;
+      limparLoginPreCadastro();
     }
     registrarFormularioCriacao();
   }
