@@ -9,8 +9,11 @@ const CHAVE_CACHE_CLIENTES = "cacheClientes";
 const CHAVE_STORAGE_CHAMADO_ATUAL = "chamadoAtualSelecionado";
 const CHAVE_STORAGE_LOGIN_PRE_CADASTRO = "loginPreCadastroCliente";
 const CHAVE_STORAGE_RETORNO_CADASTRO = "rotaRetornoCadastro";
+const CHAVE_STORAGE_ATIVIDADE_USUARIO = "usuarioUltimaAtividade";
 const ROTA_PADRAO_POS_CADASTRO = "index.html";
 const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
+const TEMPO_LIMITE_INATIVIDADE_MS = 20 * 60 * 1000;
+const INTERVALO_VERIFICACAO_INATIVIDADE_MS = 30 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
 const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
@@ -1054,6 +1057,30 @@ function salvarUsuarioAutenticado(usuario) {
 function limparAutenticacao() {
   usuarioAutenticado = null;
   localStorage.removeItem(CHAVE_STORAGE_LOGIN);
+  localStorage.removeItem(CHAVE_STORAGE_ATIVIDADE_USUARIO);
+}
+
+function registrarAtividadeUsuario() {
+  if (!usuarioAutenticado) return;
+  localStorage.setItem(CHAVE_STORAGE_ATIVIDADE_USUARIO, String(Date.now()));
+}
+
+function obterUltimaAtividadeUsuario() {
+  const valor = Number(localStorage.getItem(CHAVE_STORAGE_ATIVIDADE_USUARIO));
+  return Number.isFinite(valor) && valor > 0 ? valor : 0;
+}
+
+function sessaoExpiradaPorInatividade() {
+  if (!usuarioAutenticado) return false;
+  const ultimaAtividade = obterUltimaAtividadeUsuario();
+  if (!ultimaAtividade) return false;
+  return (Date.now() - ultimaAtividade) > TEMPO_LIMITE_INATIVIDADE_MS;
+}
+
+function encerrarSessaoPorInatividade() {
+  if (!usuarioAutenticado) return;
+  limparAutenticacao();
+  redirecionarParaLogin(true, { sessaoExpirada: true });
 }
 
 function definirUsuarioAutenticadoSeSalvo() {
@@ -1830,11 +1857,22 @@ function registrarBotoesTrocaUsuario() {
 async function configurarTelaLogin() {
   const form = document.getElementById("form-login");
   if (!form) return;
+  const alerta = document.getElementById("alerta-login");
   const params = new URLSearchParams(window.location.search);
   const forcarLogout = params.get("logout") === "1";
   if (forcarLogout) {
     limparAutenticacao();
     params.delete("logout");
+  }
+
+  if (params.get("sessao_expirada") === "1" && alerta) {
+    alerta.className = "alert alert-warning";
+    alerta.classList.remove("d-none");
+    alerta.textContent = "Sua sessão expirou após mais de 20 minutos sem atividade. Faça login novamente.";
+    params.delete("sessao_expirada");
+  }
+
+  if (forcarLogout || !params.get("sessao_expirada")) {
     const novaQuery = params.toString();
     window.history.replaceState({}, "", `login.html${novaQuery ? `?${novaQuery}` : ""}`);
   }
@@ -1842,7 +1880,6 @@ async function configurarTelaLogin() {
     window.location.href = normalizarTipoUsuario(usuarioAutenticado.tipo) === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
-  const alerta = document.getElementById("alerta-login");
   const seletorProjeto = document.getElementById("campo-projeto-login");
   try {
     const dadosProjetos = await carregarProjetosDisponiveis();
@@ -1876,6 +1913,7 @@ async function configurarTelaLogin() {
         tipo: normalizarTipoUsuario(autenticacao.tipo),
         clienteId: autenticacao.clienteId,
       });
+      registrarAtividadeUsuario();
       window.location.href = autenticacao.redirect;
       return;
     } catch {
@@ -1944,8 +1982,49 @@ function atualizarTelaComChamadosAtualizados() {
   if (document.getElementById("detalhes-chamado")) carregarDetalhesChamado();
 }
 
-function redirecionarParaLogin(forcarLogout = false) {
-  window.location.href = forcarLogout ? "login.html?logout=1" : "login.html";
+function monitorarSessaoPorInatividade() {
+  if (!usuarioAutenticado) return;
+
+  if (sessaoExpiradaPorInatividade()) {
+    encerrarSessaoPorInatividade();
+    return;
+  }
+
+  const eventosAtividade = ["click", "keydown", "mousemove", "mousedown", "scroll", "touchstart"];
+  const atualizarAtividade = () => registrarAtividadeUsuario();
+  eventosAtividade.forEach((evento) => {
+    window.addEventListener(evento, atualizarAtividade, { passive: true });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      if (sessaoExpiradaPorInatividade()) {
+        encerrarSessaoPorInatividade();
+        return;
+      }
+      registrarAtividadeUsuario();
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    if (sessaoExpiradaPorInatividade()) {
+      encerrarSessaoPorInatividade();
+      return;
+    }
+    registrarAtividadeUsuario();
+  });
+
+  window.setInterval(() => {
+    if (sessaoExpiradaPorInatividade()) encerrarSessaoPorInatividade();
+  }, INTERVALO_VERIFICACAO_INATIVIDADE_MS);
+}
+
+function redirecionarParaLogin(forcarLogout = false, opcoes = {}) {
+  const params = new URLSearchParams();
+  if (forcarLogout) params.set("logout", "1");
+  if (opcoes.sessaoExpirada) params.set("sessao_expirada", "1");
+  const query = params.toString();
+  window.location.href = `login.html${query ? `?${query}` : ""}`;
 }
 
 async function inicializar() {
@@ -1974,6 +2053,11 @@ async function inicializar() {
       alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtual()}'. Verifique o backend Python.`);
       return;
     }
+  }
+
+  if (usuarioAutenticado && sessaoExpiradaPorInatividade()) {
+    encerrarSessaoPorInatividade();
+    return;
   }
 
   if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin)) {
@@ -2033,6 +2117,7 @@ async function inicializar() {
   atualizarNomeUsuarioCabecalho();
   atualizarAcoesCabecalhoAdministrador();
   registrarBotoesTrocaUsuario();
+  monitorarSessaoPorInatividade();
 
   if (typeof BroadcastChannel !== "undefined") {
     const canalAtualizacao = new BroadcastChannel(CANAL_ATUALIZACAO_CHAMADOS);
