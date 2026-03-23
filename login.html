@@ -50,6 +50,37 @@
                 </button>
               </form>
 
+              <div class="d-none" id="card-primeiro-acesso">
+                <div class="border-top pt-4 mt-4">
+                  <h2 class="h5 text-primary text-center mb-1">Troca obrigatória de senha</h2>
+                  <p class="text-muted small text-center mb-3">
+                    No primeiro acesso, clientes e advogados precisam definir uma nova senha antes de continuar.
+                  </p>
+                  <form id="form-primeiro-acesso" class="vstack gap-3">
+                    <div class="alert alert-danger d-none" id="alerta-primeiro-acesso" role="alert"></div>
+                    <div>
+                      <label for="campo-usuario-primeiro-acesso" class="form-label">Usuário</label>
+                      <input type="text" id="campo-usuario-primeiro-acesso" class="form-control" readonly />
+                    </div>
+                    <div>
+                      <label for="campo-nova-senha" class="form-label">Nova senha</label>
+                      <div class="input-group">
+                        <input type="password" id="campo-nova-senha" class="form-control" required />
+                        <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-nova-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
+                      </div>
+                    </div>
+                    <div>
+                      <label for="campo-confirmar-nova-senha" class="form-label">Confirmar nova senha</label>
+                      <div class="input-group">
+                        <input type="password" id="campo-confirmar-nova-senha" class="form-control" required />
+                        <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-confirmar-nova-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
+                      </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Atualizar senha</button>
+                  </form>
+                </div>
+              </div>
+
               <div class="text-center mt-3">
               </div>
             </div>
