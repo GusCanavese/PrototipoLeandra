@@ -56,66 +56,6 @@ function obterRotuloTipoCadastro() {
   return usuarioEhAdministrador() ? "Cliente ou advogado" : "Cliente";
 }
 
-function obterRotuloAcaoCadastro() {
-  return usuarioEhAdministrador() ? "Cadastrar usuário" : "Cadastrar cliente";
-}
-
-function obterRotuloBotaoSalvarCadastro() {
-  return usuarioEhAdministrador() ? "Salvar usuário" : "Salvar cliente";
-}
-
-function salvarChamadoAtualSelecionado(idChamado) {
-  if (!idChamado) return;
-  sessionStorage.setItem(CHAVE_STORAGE_CHAMADO_ATUAL, idChamado);
-}
-
-function obterChamadoAtualSelecionado() {
-  return sessionStorage.getItem(CHAVE_STORAGE_CHAMADO_ATUAL) || "";
-}
-
-function limparChamadoAtualSelecionado() {
-  sessionStorage.removeItem(CHAVE_STORAGE_CHAMADO_ATUAL);
-}
-
-function salvarLoginPreCadastro(login) {
-  if (!login) return;
-  sessionStorage.setItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO, login);
-}
-
-function obterLoginPreCadastro() {
-  return sessionStorage.getItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO) || "";
-}
-
-function limparLoginPreCadastro() {
-  sessionStorage.removeItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO);
-}
-
-function salvarRotaRetornoCadastro(rota = ROTA_PADRAO_POS_CADASTRO) {
-  sessionStorage.setItem(CHAVE_STORAGE_RETORNO_CADASTRO, rota || ROTA_PADRAO_POS_CADASTRO);
-}
-
-function obterRotaRetornoCadastro() {
-  return sessionStorage.getItem(CHAVE_STORAGE_RETORNO_CADASTRO) || ROTA_PADRAO_POS_CADASTRO;
-}
-
-function limparRotaRetornoCadastro() {
-  sessionStorage.removeItem(CHAVE_STORAGE_RETORNO_CADASTRO);
-}
-
-function abrirDetalhesChamado(idChamado) {
-  if (!idChamado) return;
-  salvarChamadoAtualSelecionado(idChamado);
-  window.location.href = "details.html";
-}
-
-function prepararFluxoCadastroUsuario(opcoes = {}) {
-  const { login = "", retorno = ROTA_PADRAO_POS_CADASTRO } = opcoes;
-  if (login) salvarLoginPreCadastro(login);
-  else limparLoginPreCadastro();
-  salvarRotaRetornoCadastro(retorno);
-  window.location.href = "cadastro-cliente.html";
-}
-
 function configurarAlternadoresSenha() {
   document.querySelectorAll("[data-toggle-password]").forEach((botao) => {
     botao.addEventListener("click", () => {
@@ -1686,7 +1626,7 @@ function registrarFormularioCadastroCliente() {
   const campoLogin = document.getElementById("campo-cadastro-login");
   const campoTipo = document.getElementById("campo-cadastro-tipo");
   const textoAjudaTipo = document.getElementById("texto-ajuda-tipo-cadastro");
-  const loginPreenchido = obterLoginPreCadastro();
+  const loginPreenchido = new URLSearchParams(window.location.search).get("login");
   if (loginPreenchido) campoLogin.value = loginPreenchido;
 
   if (campoTipo) {
@@ -1740,7 +1680,7 @@ function registrarFormularioCadastroCliente() {
     } catch (erro) {
       if (alerta) {
         alerta.className = "alert alert-danger";
-        alerta.textContent = erro.message || "Não foi possível cadastrar o cliente/usuário.";
+        alerta.textContent = erro.message || "Não foi possível cadastrar o usuário.";
       }
       return;
     }
@@ -1757,7 +1697,9 @@ function registrarFormularioCadastroCliente() {
     limparRotaRetornoCadastro();
 
     setTimeout(() => {
-      window.location.href = rotaRetorno || ROTA_PADRAO_POS_CADASTRO;
+      window.location.href = tipoSelecionado === "Cliente"
+        ? `create.html?clienteLogin=${encodeURIComponent(novoUsuario.login)}`
+        : "index.html";
     }, 800);
   });
 }
@@ -1817,31 +1759,7 @@ function atualizarNomeUsuarioCabecalho() {
 function atualizarAcoesCabecalhoAdministrador() {
   const botoesAdmin = document.querySelectorAll("[data-acao-admin='cadastrar-usuario']");
   const exibir = usuarioPodeCadastrarUsuarios();
-  const rotulo = obterRotuloAcaoCadastro();
-  botoesAdmin.forEach((botao) => {
-    botao.classList.toggle("d-none", !exibir);
-    botao.textContent = rotulo;
-    botao.addEventListener("click", (evento) => {
-      evento.preventDefault();
-      prepararFluxoCadastroUsuario({ retorno: window.location.pathname.split("/").pop() || ROTA_PADRAO_POS_CADASTRO });
-    });
-  });
-
-  const tituloCadastro = document.getElementById("titulo-cadastro-usuario");
-  if (tituloCadastro) tituloCadastro.textContent = rotulo;
-
-  const botaoSalvarCadastro = document.getElementById("botao-salvar-cadastro");
-  if (botaoSalvarCadastro) botaoSalvarCadastro.textContent = obterRotuloBotaoSalvarCadastro();
-
-  const tituloPagina = document.querySelector("title");
-  if (tituloPagina && document.getElementById("pagina-cadastro-cliente")) {
-    tituloPagina.textContent = rotulo;
-  }
-
-  const linkVoltarCadastro = document.getElementById("link-voltar-cadastro");
-  if (linkVoltarCadastro) {
-    linkVoltarCadastro.href = obterRotaRetornoCadastro();
-  }
+  botoesAdmin.forEach((botao) => botao.classList.toggle("d-none", !exibir));
 }
 
 function registrarBotoesTrocaUsuario() {
