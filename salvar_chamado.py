@@ -1,29 +1,45 @@
 import json
+import os
 import re
-import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Optional
+from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
+from typing import Optional
+
+import pymysql
+from flask import Flask, jsonify, make_response, request, send_from_directory
+
+pymysql.install_as_MySQLdb()
 
 import MySQLdb
 import MySQLdb.cursors
-from flask import Flask, jsonify, make_response, request
 
-host     = "ballast.proxy.rlwy.net"
-user     = "root"
-password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-db       = "teste"
-port     =  15192
-nome_banco = "teste"
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_PAGES = {
+    "index.html",
+    "login.html",
+    "admin.html",
+    "cliente.html",
+    "cadastro-cliente.html",
+    "create.html",
+    "details.html",
+}
+
+host = os.getenv("MYSQLHOST", os.getenv("DB_HOST", "localhost"))
+user = os.getenv("MYSQLUSER", os.getenv("DB_USER", "root"))
+password = os.getenv("MYSQLPASSWORD", os.getenv("DB_PASSWORD", ""))
+db = os.getenv("MYSQLDATABASE", os.getenv("DB_NAME", "teste"))
+port = int(os.getenv("MYSQLPORT", os.getenv("DB_PORT", "3306")))
+nome_banco = db
 
 
 POOL_SIZE = 1
 DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="assets", static_url_path="/assets")
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
@@ -858,7 +874,7 @@ def servir_arquivos_estaticos(arquivo):
 def api_projetos_listar():
     try:
         projetos = listar_bancos_disponiveis()
-        return responder_json({"projetos": projetos, "padrao": db})
+        return responder_json({"projetos": projetos, "padrao": "teste"})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
