@@ -19,7 +19,7 @@ port     =  15192
 nome_banco = "teste"
 
 
-POOL_SIZE = 1
+POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
@@ -454,6 +454,7 @@ def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=T
         cursor.execute(sql, params or ())
         dados = cursor.fetchone() if fetch_one else cursor.fetchall()
         cursor.close()
+        conn.commit()
         return dados
 
     return _executar_com_retry(nome_banco, operacao)
