@@ -25,7 +25,7 @@ let usuarioAutenticado = null;
 let promessaCarregamentoChamados = null;
 let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
-let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
+let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "";
 
 
 
@@ -132,11 +132,11 @@ function configurarAlternadoresSenha() {
 }
 
 function obterBancoProjetoAtual() {
-  return (bancoProjetoAtivo || "teste").trim() || "teste";
+  return (bancoProjetoAtivo || "").trim();
 }
 
 function definirBancoProjetoAtivo(nomeBanco) {
-  bancoProjetoAtivo = (nomeBanco || "teste").trim();
+  bancoProjetoAtivo = (nomeBanco || "").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
 }
 
@@ -175,6 +175,17 @@ function garantirOverlayLoading() {
 
 async function carregarProjetosDisponiveis() {
   return requisicaoApi("/projetos", {}, { incluirBancoNoHeader: false });
+}
+
+async function sincronizarBancoProjetoAtivo() {
+  const dadosProjetos = await carregarProjetosDisponiveis();
+  const projetos = dadosProjetos.projetos || [];
+  const bancoAtual = obterBancoProjetoAtual();
+  if (bancoAtual && projetos.includes(bancoAtual)) return dadosProjetos;
+
+  const bancoPadrao = dadosProjetos.padrao || projetos[0] || "";
+  definirBancoProjetoAtivo(bancoPadrao);
+  return dadosProjetos;
 }
 
 function formatarDataHoraAtual() {
@@ -1882,7 +1893,7 @@ async function configurarTelaLogin() {
   }
   const seletorProjeto = document.getElementById("campo-projeto-login");
   try {
-    const dadosProjetos = await carregarProjetosDisponiveis();
+    const dadosProjetos = await sincronizarBancoProjetoAtivo();
     if (seletorProjeto) {
       seletorProjeto.innerHTML = (dadosProjetos.projetos || [])
         .map((projeto) => `<option value="${projeto}">${projeto}</option>`)
@@ -2039,6 +2050,7 @@ async function inicializar() {
   const paginaCadastroCliente = document.getElementById("pagina-cadastro-cliente");
   const paginaAdmin = document.getElementById("pagina-admin");
 
+  await sincronizarBancoProjetoAtivo();
   await configurarTelaLogin();
 
   const carregamentosIniciais = [];

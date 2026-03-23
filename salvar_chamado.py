@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -154,6 +155,10 @@ def _executar_com_retry(nome_banco, operacao):
                     raise
 
 
+async def executar_em_thread(funcao, *args, **kwargs):
+    return await asyncio.to_thread(funcao, *args, **kwargs)
+
+
 def aplicar_headers_cors(resposta):
     resposta.headers["Access-Control-Allow-Origin"] = "*"
     resposta.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
@@ -213,7 +218,7 @@ def validar_banco_disponivel(nome_banco):
 
 
 def obter_banco_requisicao():
-    nome_banco = request.headers.get("X-Project-DB", "teste")
+    nome_banco = request.headers.get("X-Project-DB", db)
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
     try:
@@ -874,7 +879,7 @@ def servir_arquivos_estaticos(arquivo):
 def api_projetos_listar():
     try:
         projetos = listar_bancos_disponiveis()
-        return responder_json({"projetos": projetos, "padrao": "teste"})
+        return responder_json({"projetos": projetos, "padrao": db})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
@@ -984,7 +989,7 @@ async def api_login():
     senha = (dados.get("senha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or "teste"
+        nome_banco = dados.get("banco") or db
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
