@@ -10,6 +10,7 @@ const CHAVE_STORAGE_CHAMADO_ATUAL = "chamadoAtualSelecionado";
 const CHAVE_STORAGE_LOGIN_PRE_CADASTRO = "loginPreCadastroCliente";
 const CHAVE_STORAGE_RETORNO_CADASTRO = "rotaRetornoCadastro";
 const CHAVE_STORAGE_ATIVIDADE_USUARIO = "usuarioUltimaAtividade";
+const CHAVE_STORAGE_RESET_BANCO = "bancoProjetoResetSenha";
 const ROTA_PADRAO_POS_CADASTRO = "index.html";
 const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_LIMITE_INATIVIDADE_MS = 20 * 60 * 1000;
@@ -138,6 +139,18 @@ function obterBancoProjetoAtual() {
 function definirBancoProjetoAtivo(nomeBanco) {
   bancoProjetoAtivo = (nomeBanco || "").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
+}
+
+function salvarBancoResetSenha(nomeBanco) {
+  if (nomeBanco) sessionStorage.setItem(CHAVE_STORAGE_RESET_BANCO, nomeBanco);
+}
+
+function obterBancoResetSenha() {
+  return sessionStorage.getItem(CHAVE_STORAGE_RESET_BANCO) || obterBancoProjetoAtual();
+}
+
+function limparBancoResetSenha() {
+  sessionStorage.removeItem(CHAVE_STORAGE_RESET_BANCO);
 }
 
 
@@ -1865,6 +1878,96 @@ function registrarBotoesTrocaUsuario() {
   });
 }
 
+async function configurarTelaRecuperacaoSenha() {
+  const formRecuperacao = document.getElementById("form-forgot-password");
+  const formReset = document.getElementById("form-reset-password");
+
+  if (formRecuperacao) {
+    const alerta = document.getElementById("alerta-forgot-password");
+    let bancoReset = obterBancoProjetoAtual();
+    try {
+      const dadosProjetos = await sincronizarBancoProjetoAtivo();
+      bancoReset = dadosProjetos?.padrao || obterBancoProjetoAtual();
+      salvarBancoResetSenha(bancoReset);
+    } catch {
+      salvarBancoResetSenha(bancoReset);
+    }
+
+    formRecuperacao.addEventListener("submit", async (evento) => {
+      evento.preventDefault();
+      const email = document.getElementById("campo-forgot-email").value.trim().toLowerCase();
+      if (!email) return;
+      try {
+        await requisicaoApi("/password-reset/request", {
+          method: "POST",
+          body: JSON.stringify({ email, banco: bancoReset || obterBancoProjetoAtual() }),
+        }, { incluirBancoNoHeader: false });
+        if (alerta) {
+          alerta.className = "alert alert-success";
+          alerta.classList.remove("d-none");
+          alerta.textContent = "Link de redefinição enviado com sucesso para o e-mail cadastrado.";
+        }
+        formRecuperacao.reset();
+      } catch (erro) {
+        if (alerta) {
+          alerta.className = "alert alert-danger";
+          alerta.classList.remove("d-none");
+          alerta.textContent = erro.message || "Não foi possível enviar o e-mail de redefinição.";
+        }
+      }
+    });
+  }
+
+  if (formReset) {
+    const alerta = document.getElementById("alerta-reset-password");
+    const params = new URLSearchParams(window.location.search);
+    const token = (params.get("token") || "").trim();
+    if (!token && alerta) {
+      alerta.className = "alert alert-danger";
+      alerta.classList.remove("d-none");
+      alerta.textContent = "Link de redefinição inválido.";
+    }
+
+    formReset.addEventListener("submit", async (evento) => {
+      evento.preventDefault();
+      const novaSenha = document.getElementById("campo-reset-senha").value.trim();
+      const confirmacao = document.getElementById("campo-reset-confirmacao").value.trim();
+      if (!token) return;
+      if (!novaSenha || novaSenha !== confirmacao) {
+        if (alerta) {
+          alerta.className = "alert alert-danger";
+          alerta.classList.remove("d-none");
+          alerta.textContent = "As senhas informadas devem ser iguais.";
+        }
+        return;
+      }
+
+      try {
+        await requisicaoApi("/password-reset/confirm", {
+          method: "POST",
+          body: JSON.stringify({ token, novaSenha, banco: obterBancoResetSenha() }),
+        }, { incluirBancoNoHeader: false });
+        limparBancoResetSenha();
+        if (alerta) {
+          alerta.className = "alert alert-success";
+          alerta.classList.remove("d-none");
+          alerta.textContent = "Senha redefinida com sucesso. Você já pode fazer login.";
+        }
+        formReset.reset();
+        window.setTimeout(() => {
+          window.location.href = "login.html";
+        }, 1200);
+      } catch (erro) {
+        if (alerta) {
+          alerta.className = "alert alert-danger";
+          alerta.classList.remove("d-none");
+          alerta.textContent = erro.message || "Não foi possível redefinir a senha.";
+        }
+      }
+    });
+  }
+}
+
 async function configurarTelaLogin() {
   const form = document.getElementById("form-login");
   if (!form) return;
@@ -2051,6 +2154,7 @@ async function inicializar() {
   const paginaAdmin = document.getElementById("pagina-admin");
 
   await sincronizarBancoProjetoAtivo();
+  await configurarTelaRecuperacaoSenha();
   await configurarTelaLogin();
 
   const carregamentosIniciais = [];

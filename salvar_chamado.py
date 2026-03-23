@@ -1,9 +1,13 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
+import secrets
+import smtplib
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
@@ -26,6 +30,8 @@ STATIC_PAGES = {
     "cadastro-cliente.html",
     "create.html",
     "details.html",
+    "forgot-password.html",
+    "reset-password.html",
 }
 
 host = os.getenv("MYSQLHOST", os.getenv("DB_HOST", "localhost"))
@@ -41,6 +47,14 @@ DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
 app = Flask(__name__, static_folder="assets", static_url_path="/assets")
+
+RESET_TOKEN_TTL_MINUTOS = 30
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_REMETENTE = os.getenv("SMTP_REMETENTE", SMTP_USER)
+APP_BASE_URL = os.getenv("APP_BASE_URL", "")
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
@@ -465,11 +479,169 @@ def executar_transacao(nome_banco, callback):
     _executar_com_retry(nome_banco, operacao)
 
 
+def garantir_colunas_usuarios(nome_banco):
+    def operacao(conn):
+        cursor = conn.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'usuarios'
+            """,
+            (nome_banco,),
+        )
+        colunas = {linha["COLUMN_NAME"] for linha in cursor.fetchall()}
+        if "email" not in colunas:
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN email VARCHAR(255) NULL")
+        cursor.close()
+
+    _executar_com_retry(nome_banco, operacao)
+
+
+def garantir_tabela_tokens_reset(nome_banco):
+    def operacao(conn):
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                usuario VARCHAR(255) NOT NULL,
+                token_hash VARCHAR(64) NOT NULL,
+                expira_em DATETIME NOT NULL,
+                usado_em DATETIME NULL,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_password_reset_usuario (usuario),
+                UNIQUE KEY uk_password_reset_token_hash (token_hash)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cursor.close()
+
+    _executar_com_retry(nome_banco, operacao)
+
+
+def obter_usuario_por_login_ou_email(nome_banco, identificador):
+    if not identificador:
+        return None
+    garantir_colunas_usuarios(nome_banco)
+    return executar_select(
+        nome_banco,
+        """
+        SELECT usuario, senha, tipo, nome_completo, telefone, documento, email
+        FROM usuarios
+        WHERE LOWER(usuario) = LOWER(%s) OR LOWER(email) = LOWER(%s)
+        LIMIT 1
+        """,
+        (identificador, identificador),
+        fetch_one=True,
+    )
+
+
+def hash_token_reset(token):
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def gerar_link_reset(token):
+    base_url = (APP_BASE_URL or "").strip().rstrip("/")
+    if not base_url:
+        base_url = request.host_url.rstrip("/")
+    return f"{base_url}/reset-password.html?token={token}"
+
+
+def enviar_email_recuperacao(destinatario, nome_usuario, link_reset):
+    if not SMTP_USER or not SMTP_PASSWORD or not SMTP_REMETENTE:
+        raise RuntimeError(
+            "Configure SMTP_USER, SMTP_PASSWORD e SMTP_REMETENTE no ambiente para enviar e-mails de recuperação."
+        )
+
+    mensagem = EmailMessage()
+    mensagem["Subject"] = "Redefinição de senha"
+    mensagem["From"] = SMTP_REMETENTE
+    mensagem["To"] = destinatario
+    mensagem.set_content(
+        f"""Olá, {nome_usuario or 'usuário'}.
+
+Recebemos uma solicitação para redefinir sua senha.
+
+Abra este link para criar uma nova senha:
+{link_reset}
+
+Se você não solicitou a redefinição, ignore este e-mail.
+
+O link expira em {RESET_TOKEN_TTL_MINUTOS} minutos.
+"""
+    )
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as servidor:
+        servidor.starttls()
+        servidor.login(SMTP_USER, SMTP_PASSWORD)
+        servidor.send_message(mensagem)
+
+
+def criar_solicitacao_reset_senha(nome_banco, email):
+    garantir_colunas_usuarios(nome_banco)
+    garantir_tabela_tokens_reset(nome_banco)
+    usuario = obter_usuario_por_login_ou_email(nome_banco, (email or "").strip().lower())
+    if not usuario or not (usuario.get("email") or "").strip():
+        raise ValueError("Nenhum usuário cadastrado foi encontrado com este e-mail.")
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hash_token_reset(token)
+    expira_em = datetime.now() + timedelta(minutes=RESET_TOKEN_TTL_MINUTOS)
+
+    def transacao(conn):
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM password_reset_tokens WHERE usuario = %s OR expira_em < NOW()", (usuario["usuario"],))
+        cursor.execute(
+            "INSERT INTO password_reset_tokens (usuario, token_hash, expira_em) VALUES (%s, %s, %s)",
+            (usuario["usuario"], token_hash, expira_em),
+        )
+        cursor.close()
+
+    executar_transacao(nome_banco, transacao)
+
+    link_reset = gerar_link_reset(token)
+    enviar_email_recuperacao(usuario["email"], usuario.get("nome_completo") or usuario["usuario"], link_reset)
+    return usuario
+
+
+def redefinir_senha_com_token(nome_banco, token, nova_senha):
+    if not token:
+        raise ValueError("Token de redefinição inválido.")
+    if not nova_senha:
+        raise ValueError("Informe a nova senha.")
+    garantir_tabela_tokens_reset(nome_banco)
+    token_hash = hash_token_reset(token)
+
+    def transacao(conn):
+        cursor = conn.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute(
+            """
+            SELECT usuario, expira_em, usado_em
+            FROM password_reset_tokens
+            WHERE token_hash = %s
+            LIMIT 1
+            """,
+            (token_hash,),
+        )
+        registro = cursor.fetchone()
+        if not registro:
+            raise ValueError("Link de redefinição inválido ou expirado.")
+        if registro["usado_em"] is not None or registro["expira_em"] < datetime.now():
+            raise ValueError("Link de redefinição inválido ou expirado.")
+
+        cursor.execute("UPDATE usuarios SET senha = %s WHERE usuario = %s", (nova_senha, registro["usuario"]))
+        cursor.execute("UPDATE password_reset_tokens SET usado_em = NOW() WHERE token_hash = %s", (token_hash,))
+        cursor.close()
+
+    executar_transacao(nome_banco, transacao)
+
+
 def listar_clientes(nome_banco):
     registros = executar_select(
         nome_banco,
         """
-        SELECT usuario, senha, nome_completo, telefone, documento
+        SELECT usuario, senha, nome_completo, telefone, documento, email
         FROM usuarios
         WHERE tipo = 'Cliente'
         ORDER BY usuario
@@ -480,6 +652,7 @@ def listar_clientes(nome_banco):
             "nomeCompleto": r["nome_completo"] or "",
             "telefone": r["telefone"] or "",
             "documento": r["documento"] or "",
+            "email": r["email"] or "",
             "login": r["usuario"],
             "senha": r["senha"],
         }
@@ -488,14 +661,16 @@ def listar_clientes(nome_banco):
 
 
 def substituir_clientes(nome_banco, clientes):
+    garantir_colunas_usuarios(nome_banco)
+
     def transacao(conn):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM usuarios WHERE tipo = 'Cliente'")
         for cliente in clientes:
             cursor.execute(
                 """
-                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-                VALUES (%s, %s, 'Cliente', %s, %s, %s)
+                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, email)
+                VALUES (%s, %s, 'Cliente', %s, %s, %s, %s)
                 """,
                 (
                     cliente["login"],
@@ -503,6 +678,7 @@ def substituir_clientes(nome_banco, clientes):
                     cliente.get("nomeCompleto") or None,
                     cliente.get("telefone") or None,
                     cliente.get("documento") or None,
+                    (cliente.get("email") or "").strip().lower() or None,
                 ),
             )
         cursor.close()
@@ -511,6 +687,7 @@ def substituir_clientes(nome_banco, clientes):
 
 
 def inserir_cliente(nome_banco, cliente):
+    garantir_colunas_usuarios(nome_banco)
     tipo = cliente.get("tipo") or "Cliente"
     if tipo == "Técnico":
         tipo = "Advogado"
@@ -520,8 +697,8 @@ def inserir_cliente(nome_banco, cliente):
     executar_write(
         nome_banco,
         """
-        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, email)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
         (
             cliente["login"],
@@ -530,6 +707,7 @@ def inserir_cliente(nome_banco, cliente):
             cliente.get("nomeCompleto") or None,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
+            (cliente.get("email") or "").strip().lower() or None,
         ),
     )
 
@@ -842,12 +1020,7 @@ def excluir_chamado(nome_banco, id_chamado):
 
 
 def autenticar_usuario(nome_banco, usuario, senha):
-    registro = executar_select(
-        nome_banco,
-        "SELECT usuario, senha, tipo FROM usuarios WHERE usuario = %s LIMIT 1",
-        (usuario,),
-        fetch_one=True,
-    )
+    registro = obter_usuario_por_login_ou_email(nome_banco, usuario)
     if not registro or registro["senha"] != senha:
         return None
     return registro
@@ -982,6 +1155,39 @@ def api_chamado_remover(id_chamado):
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
+@app.route("/api/password-reset/request", methods=["POST"])
+def api_password_reset_request():
+    dados = request.json or {}
+    email = (dados.get("email") or "").strip().lower()
+    nome_banco = (dados.get("banco") or db).strip()
+
+    try:
+        if not nome_banco_valido(nome_banco):
+            raise ValueError("Nome de banco inválido.")
+        if not email:
+            raise ValueError("Informe o e-mail cadastrado.")
+        criar_solicitacao_reset_senha(nome_banco, email)
+        return responder_json({"ok": True, "mensagem": "E-mail de redefinição enviado com sucesso."})
+    except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/password-reset/confirm", methods=["POST"])
+def api_password_reset_confirm():
+    dados = request.json or {}
+    token = (dados.get("token") or "").strip()
+    nova_senha = (dados.get("novaSenha") or "").strip()
+    nome_banco = (dados.get("banco") or db).strip()
+
+    try:
+        if not nome_banco_valido(nome_banco):
+            raise ValueError("Nome de banco inválido.")
+        redefinir_senha_com_token(nome_banco, token, nova_senha)
+        return responder_json({"ok": True, "mensagem": "Senha redefinida com sucesso."})
+    except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
 @app.route("/api/login", methods=["POST"])
 def api_login():
     dados = request.json or {}
@@ -1009,7 +1215,7 @@ def api_login():
     return responder_json(
         {
             "ok": True,
-            "usuario": usuario,
+            "usuario": autenticado["usuario"],
             "tipo": tipo,
             "clienteId": cliente_id,
             "redirect": redirect,
