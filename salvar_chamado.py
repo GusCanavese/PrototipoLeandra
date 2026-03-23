@@ -1,54 +1,29 @@
-import asyncio
 import json
-import os
 import re
+import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
+from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
-from typing import Optional
-
-import pymysql
-from flask import Flask, jsonify, make_response, request, send_from_directory
-
-pymysql.install_as_MySQLdb()
 
 import MySQLdb
 import MySQLdb.cursors
+from flask import Flask, jsonify, make_response, request
 
-BASE_DIR = Path(__file__).resolve().parent
-STATIC_PAGES = {
-    "index.html",
-    "login.html",
-    "admin.html",
-    "cliente.html",
-    "cadastro-cliente.html",
-    "create.html",
-    "details.html",
-}
-
-host = os.getenv("MYSQLHOST", os.getenv("DB_HOST", "localhost"))
-user = os.getenv("MYSQLUSER", os.getenv("DB_USER", "root"))
-password = os.getenv("MYSQLPASSWORD", os.getenv("DB_PASSWORD", ""))
-db = os.getenv("MYSQLDATABASE", os.getenv("DB_NAME", "teste"))
-port = int(os.getenv("MYSQLPORT", os.getenv("DB_PORT", "3306")))
-nome_banco = db
+host     = "ballast.proxy.rlwy.net"
+user     = "root"
+password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
+db       = "teste"
+port     =  15192
+nome_banco = "teste"
 
 
 POOL_SIZE = 1
 DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
-app = Flask(__name__, static_folder="assets", static_url_path="/assets")
-
-RESET_TOKEN_TTL_MINUTOS = 30
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("smtp.gmail.com", "")
-SMTP_PASSWORD = os.getenv("qnur xfqq nebz uowa", "")
-SMTP_REMETENTE = os.getenv("bicalhogustavo866@gmail.com", SMTP_USER)
-APP_BASE_URL = os.getenv("APP_BASE_URL", "")
+app = Flask(__name__)
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
@@ -163,10 +138,6 @@ def _executar_com_retry(nome_banco, operacao):
                     raise
 
 
-async def executar_em_thread(funcao, *args, **kwargs):
-    return await asyncio.to_thread(funcao, *args, **kwargs)
-
-
 def aplicar_headers_cors(resposta):
     resposta.headers["Access-Control-Allow-Origin"] = "*"
     resposta.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
@@ -226,7 +197,7 @@ def validar_banco_disponivel(nome_banco):
 
 
 def obter_banco_requisicao():
-    nome_banco = request.headers.get("X-Project-DB", db)
+    nome_banco = request.headers.get("X-Project-DB", "teste")
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
     try:
