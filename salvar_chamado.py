@@ -53,7 +53,7 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("smtp.gmail.com", "")
 SMTP_PASSWORD = os.getenv("qnur xfqq nebz uowa", "")
-SMTP_REMETENTE = os.getenv("bicalhogustavo866", SMTP_USER)
+SMTP_REMETENTE = os.getenv("bicalhogustavo866@gmail.com", SMTP_USER)
 APP_BASE_URL = os.getenv("APP_BASE_URL", "")
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
