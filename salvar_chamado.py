@@ -8,6 +8,8 @@ from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
 
+import pymysql
+pymysql.install_as_MySQLdb()
 import MySQLdb
 import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
@@ -930,6 +932,11 @@ def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
 
 
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    return responder_json({"ok": True, "status": "healthy"})
+
+
 @app.route("/api/projetos", methods=["GET"])
 async def api_projetos_listar():
     try:
@@ -1109,4 +1116,6 @@ async def api_primeiro_acesso():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    porta_http = int(os.getenv("PORT", "5000"))
+    debug = os.getenv("FLASK_DEBUG", "").lower() in {"1", "true", "yes"}
+    app.run(host="0.0.0.0", port=porta_http, debug=debug)
