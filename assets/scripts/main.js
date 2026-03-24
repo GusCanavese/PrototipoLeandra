@@ -10,6 +10,7 @@ const CHAVE_STORAGE_CHAMADO_ATUAL = "chamadoAtualSelecionado";
 const CHAVE_STORAGE_LOGIN_PRE_CADASTRO = "loginPreCadastroCliente";
 const CHAVE_STORAGE_RETORNO_CADASTRO = "rotaRetornoCadastro";
 const CHAVE_STORAGE_ATIVIDADE_USUARIO = "usuarioUltimaAtividade";
+const CHAVE_STORAGE_SENHA_TEMPORARIA = "senhaTemporariaPrimeiroAcesso";
 const ROTA_PADRAO_POS_CADASTRO = "index.html";
 const CACHE_DADOS_TTL_MS = 5 * 60 * 1000;
 const TEMPO_LIMITE_INATIVIDADE_MS = 20 * 60 * 1000;
@@ -998,6 +999,7 @@ function limparAutenticacao() {
   usuarioAutenticado = null;
   localStorage.removeItem(CHAVE_STORAGE_LOGIN);
   localStorage.removeItem(CHAVE_STORAGE_ATIVIDADE_USUARIO);
+  sessionStorage.removeItem(CHAVE_STORAGE_SENHA_TEMPORARIA);
 }
 
 function registrarAtividadeUsuario() {
@@ -1776,6 +1778,9 @@ async function configurarTelaLogin() {
   const form = document.getElementById("form-login");
   if (!form) return;
   const alerta = document.getElementById("alerta-login");
+  const cardPrimeiroAcesso = document.getElementById("card-primeiro-acesso");
+  const formPrimeiroAcesso = document.getElementById("form-primeiro-acesso");
+  const alertaPrimeiroAcesso = document.getElementById("alerta-primeiro-acesso");
   const params = new URLSearchParams(window.location.search);
   const forcarLogout = params.get("logout") === "1";
   if (forcarLogout) {
@@ -1794,10 +1799,29 @@ async function configurarTelaLogin() {
     const novaQuery = params.toString();
     window.history.replaceState({}, "", `login.html${novaQuery ? `?${novaQuery}` : ""}`);
   }
-  if (usuarioAutenticado) {
+  if (usuarioAutenticado && !usuarioAutenticado?.precisaTrocarSenha) {
     window.location.href = normalizarTipoUsuario(usuarioAutenticado.tipo) === "Cliente" ? "cliente.html" : "index.html";
     return;
   }
+  function exibirFluxoPrimeiroAcesso() {
+    if (!usuarioAutenticado?.precisaTrocarSenha) return;
+    form.classList.add("d-none");
+    if (cardPrimeiroAcesso) cardPrimeiroAcesso.classList.remove("d-none");
+    const campoUsuarioPrimeiroAcesso = document.getElementById("campo-usuario-primeiro-acesso");
+    if (campoUsuarioPrimeiroAcesso) campoUsuarioPrimeiroAcesso.value = usuarioAutenticado.usuario || "";
+  }
+
+  function ocultarFluxoPrimeiroAcesso() {
+    form.classList.remove("d-none");
+    if (cardPrimeiroAcesso) cardPrimeiroAcesso.classList.add("d-none");
+  }
+
+  if (usuarioAutenticado?.precisaTrocarSenha && !sessionStorage.getItem(CHAVE_STORAGE_SENHA_TEMPORARIA)) {
+    limparAutenticacao();
+  }
+
+  if (usuarioAutenticado?.precisaTrocarSenha) exibirFluxoPrimeiroAcesso();
+  else ocultarFluxoPrimeiroAcesso();
   const seletorProjeto = document.getElementById("campo-projeto-login");
   try {
     const dadosProjetos = await carregarProjetosDisponiveis();
@@ -1830,7 +1854,18 @@ async function configurarTelaLogin() {
         usuario,
         tipo: normalizarTipoUsuario(autenticacao.tipo),
         clienteId: autenticacao.clienteId,
+        precisaTrocarSenha: Boolean(autenticacao.precisaTrocarSenha),
       });
+      if (autenticacao.precisaTrocarSenha) {
+        sessionStorage.setItem(CHAVE_STORAGE_SENHA_TEMPORARIA, senha);
+        if (alerta) {
+          alerta.className = "alert alert-warning";
+          alerta.classList.remove("d-none");
+          alerta.textContent = "No primeiro acesso, a troca de senha é obrigatória.";
+        }
+        exibirFluxoPrimeiroAcesso();
+        return;
+      }
       registrarAtividadeUsuario();
       window.location.href = autenticacao.redirect;
       return;
@@ -1841,6 +1876,51 @@ async function configurarTelaLogin() {
       alerta.className = "alert alert-danger";
       alerta.classList.remove("d-none");
       alerta.textContent = "Usuário ou senha incorretos.";
+    }
+  });
+
+  formPrimeiroAcesso?.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    const novaSenha = document.getElementById("campo-nova-senha").value.trim();
+    const confirmarSenha = document.getElementById("campo-confirmar-nova-senha").value.trim();
+    const senhaAtual = sessionStorage.getItem(CHAVE_STORAGE_SENHA_TEMPORARIA) || "";
+
+    if (!novaSenha || !confirmarSenha) return;
+    if (novaSenha !== confirmarSenha) {
+      if (alertaPrimeiroAcesso) {
+        alertaPrimeiroAcesso.className = "alert alert-danger";
+        alertaPrimeiroAcesso.classList.remove("d-none");
+        alertaPrimeiroAcesso.textContent = "A confirmação da nova senha não confere.";
+      }
+      return;
+    }
+
+    try {
+      const resposta = await requisicaoApi("/usuarios/primeiro-acesso", {
+        method: "POST",
+        body: JSON.stringify({
+          usuario: usuarioAutenticado?.usuario,
+          senhaAtual,
+          novaSenha,
+          banco: obterBancoProjetoAtual(),
+        }),
+      });
+      if (resposta.banco) definirBancoProjetoAtivo(resposta.banco);
+      salvarUsuarioAutenticado({
+        usuario: resposta.usuario,
+        tipo: normalizarTipoUsuario(resposta.tipo),
+        clienteId: resposta.clienteId,
+        precisaTrocarSenha: false,
+      });
+      sessionStorage.removeItem(CHAVE_STORAGE_SENHA_TEMPORARIA);
+      registrarAtividadeUsuario();
+      window.location.href = resposta.redirect;
+    } catch (erro) {
+      if (alertaPrimeiroAcesso) {
+        alertaPrimeiroAcesso.className = "alert alert-danger";
+        alertaPrimeiroAcesso.classList.remove("d-none");
+        alertaPrimeiroAcesso.textContent = erro.message || "Não foi possível atualizar a senha.";
+      }
     }
   });
 }
@@ -1980,6 +2060,14 @@ async function inicializar() {
 
   if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin)) {
     redirecionarParaLogin();
+    return;
+  }
+
+  if (
+    usuarioAutenticado?.precisaTrocarSenha
+    && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin)
+  ) {
+    window.location.href = "login.html";
     return;
   }
 

@@ -19,7 +19,7 @@ port     =  15192
 nome_banco = "teste"
 
 
-POOL_SIZE = 1
+POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
@@ -29,6 +29,7 @@ SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
 tabelas_atualizacoes_cache = {}
+usuarios_cache = {}
 
 _connection_lock = Lock()
 _pools = {}
@@ -391,6 +392,45 @@ def preparar_tabela_atualizacoes_em_conexao(nome_banco, conn):
     return tabela
 
 
+def garantir_coluna_primeiro_acesso(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'usuarios'
+              AND COLUMN_NAME = 'primeiro_acesso'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE usuarios
+                ADD COLUMN primeiro_acesso TINYINT(1) NOT NULL DEFAULT 0
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_usuarios(nome_banco):
+    agora = datetime.now()
+    cache = usuarios_cache.get(nome_banco)
+    if cache and agora < cache:
+        return
+
+    def operacao(conn):
+        garantir_coluna_primeiro_acesso(conn)
+
+    _executar_com_retry(nome_banco, operacao)
+    usuarios_cache[nome_banco] = agora + timedelta(minutes=10)
+
+
 def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     if valor is None or valor == "":
         return padrao
@@ -414,6 +454,7 @@ def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=T
         cursor.execute(sql, params or ())
         dados = cursor.fetchone() if fetch_one else cursor.fetchall()
         cursor.close()
+        conn.commit()
         return dados
 
     return _executar_com_retry(nome_banco, operacao)
@@ -442,6 +483,7 @@ def executar_transacao(nome_banco, callback):
 
 
 def listar_clientes(nome_banco):
+    preparar_tabela_usuarios(nome_banco)
     registros = executar_select(
         nome_banco,
         """
@@ -464,14 +506,15 @@ def listar_clientes(nome_banco):
 
 
 def substituir_clientes(nome_banco, clientes):
+    preparar_tabela_usuarios(nome_banco)
     def transacao(conn):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM usuarios WHERE tipo = 'Cliente'")
         for cliente in clientes:
             cursor.execute(
                 """
-                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-                VALUES (%s, %s, 'Cliente', %s, %s, %s)
+                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, primeiro_acesso)
+                VALUES (%s, %s, 'Cliente', %s, %s, %s, %s)
                 """,
                 (
                     cliente["login"],
@@ -479,6 +522,7 @@ def substituir_clientes(nome_banco, clientes):
                     cliente.get("nomeCompleto") or None,
                     cliente.get("telefone") or None,
                     cliente.get("documento") or None,
+                    1,
                 ),
             )
         cursor.close()
@@ -487,6 +531,7 @@ def substituir_clientes(nome_banco, clientes):
 
 
 def inserir_cliente(nome_banco, cliente):
+    preparar_tabela_usuarios(nome_banco)
     tipo = cliente.get("tipo") or "Cliente"
     if tipo == "Técnico":
         tipo = "Advogado"
@@ -496,8 +541,8 @@ def inserir_cliente(nome_banco, cliente):
     executar_write(
         nome_banco,
         """
-        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, primeiro_acesso)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
         (
             cliente["login"],
@@ -506,8 +551,51 @@ def inserir_cliente(nome_banco, cliente):
             cliente.get("nomeCompleto") or None,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
+            1 if tipo in {"Cliente", "Advogado"} else 0,
         ),
     )
+
+
+def trocar_senha_primeiro_acesso(nome_banco, usuario, senha_atual, nova_senha):
+    preparar_tabela_usuarios(nome_banco)
+    registro = executar_select(
+        nome_banco,
+        """
+        SELECT usuario, senha, tipo, primeiro_acesso
+        FROM usuarios
+        WHERE usuario = %s
+        LIMIT 1
+        """,
+        (usuario,),
+        fetch_one=True,
+    )
+    if not registro or registro["senha"] != senha_atual:
+        raise ValueError("Credenciais inválidas.")
+
+    tipo_registro = registro["tipo"]
+    tipo = "Advogado" if tipo_registro in {"Técnico", "TÃ©cnico"} else tipo_registro
+    if tipo not in {"Cliente", "Advogado"}:
+        raise ValueError("Somente clientes e advogados podem usar esse fluxo.")
+    if not int(registro.get("primeiro_acesso") or 0):
+        raise ValueError("A troca obrigatória de senha já foi concluída.")
+    if not nova_senha or nova_senha == senha_atual:
+        raise ValueError("Informe uma nova senha diferente da atual.")
+
+    executar_write(
+        nome_banco,
+        """
+        UPDATE usuarios
+        SET senha = %s,
+            primeiro_acesso = 0
+        WHERE usuario = %s
+        """,
+        (nova_senha, usuario),
+    )
+
+    return {
+        "usuario": usuario,
+        "tipo": tipo,
+    }
 
 
 
@@ -818,9 +906,10 @@ def excluir_chamado(nome_banco, id_chamado):
 
 
 def autenticar_usuario(nome_banco, usuario, senha):
+    preparar_tabela_usuarios(nome_banco)
     registro = executar_select(
         nome_banco,
-        "SELECT usuario, senha, tipo FROM usuarios WHERE usuario = %s LIMIT 1",
+        "SELECT usuario, senha, tipo, primeiro_acesso FROM usuarios WHERE usuario = %s LIMIT 1",
         (usuario,),
         fetch_one=True,
     )
@@ -972,9 +1061,44 @@ async def api_login():
             "tipo": tipo,
             "clienteId": cliente_id,
             "redirect": redirect,
+            "precisaTrocarSenha": bool(autenticado.get("primeiro_acesso")) and tipo in {"Cliente", "Advogado"},
             "banco": nome_banco,
         }
     )
+
+
+@app.route("/api/usuarios/primeiro-acesso", methods=["POST"])
+async def api_primeiro_acesso():
+    dados = request.json or {}
+    usuario = (dados.get("usuario") or "").strip()
+    senha_atual = (dados.get("senhaAtual") or "").strip()
+    nova_senha = (dados.get("novaSenha") or "").strip()
+
+    try:
+        nome_banco = dados.get("banco") or "teste"
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
+        if not valido:
+            raise ValueError("Nome de banco invÃ¡lido.")
+        resultado = await executar_em_thread(
+            trocar_senha_primeiro_acesso,
+            nome_banco,
+            usuario,
+            senha_atual,
+            nova_senha,
+        )
+        tipo = resultado["tipo"]
+        return responder_json(
+            {
+                "ok": True,
+                "usuario": usuario,
+                "tipo": tipo,
+                "clienteId": usuario if tipo == "Cliente" else "",
+                "redirect": "index.html" if tipo == "Advogado" else "cliente.html",
+                "banco": nome_banco,
+            }
+        )
+    except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
 if __name__ == "__main__":
