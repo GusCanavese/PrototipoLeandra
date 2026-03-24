@@ -10,17 +10,14 @@ from threading import Lock
 
 import MySQLdb
 import MySQLdb.cursors
-from flask import Flask, abort, jsonify, make_response, request, send_from_directory
+from flask import Flask, jsonify, make_response, request
 
-host = (os.getenv("MYSQLHOST") or "").strip()
-user = (os.getenv("MYSQLUSER") or "").strip()
-password = os.getenv("MYSQLPASSWORD") or ""
-db = (os.getenv("MYSQLDATABASE") or "teste").strip()
-nome_banco = db
-try:
-    port = int(os.getenv("MYSQLPORT", "0"))
-except ValueError:
-    port = 0
+host     = "ballast.proxy.rlwy.net"
+user     = "root"
+password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
+db       = "teste"
+port     =  15192
+nome_banco = "teste"
 
 
 POOL_SIZE = 8
@@ -28,16 +25,6 @@ DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
 app = Flask(__name__)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ARQUIVOS_PUBLICOS = {
-    "index.html",
-    "login.html",
-    "admin.html",
-    "cliente.html",
-    "create.html",
-    "details.html",
-    "cadastro-cliente.html",
-}
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
@@ -943,35 +930,13 @@ def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
 
 
-@app.route("/api/health", methods=["GET"])
-def healthcheck():
-    payload = {"status": "ok"}
-    if configuracao_banco_incompleta():
-        payload["database"] = "unconfigured"
-        return responder_json(payload, 200)
-
-    try:
-        with conexao_pool(db) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-            cursor.close()
-        payload["database"] = "ok"
-    except Exception:
-        payload["database"] = "unavailable"
-
-    return responder_json(payload, 200)
-
-
 @app.route("/api/projetos", methods=["GET"])
 async def api_projetos_listar():
     try:
         projetos = await executar_em_thread(listar_bancos_disponiveis)
         return responder_json({"projetos": projetos, "padrao": "teste"})
     except RuntimeError as erro:
-        return responder_json({"ok": False, "erro": str(erro), "projetos": ["teste"], "padrao": "teste"}, 200)
-    except MySQLdb.MySQLError:
-        return responder_json({"ok": False, "erro": "Banco de dados indisponível no momento.", "projetos": ["teste"], "padrao": "teste"}, 200)
+        return responder_json({"ok": False, "erro": str(erro)}, 500)
 
 
 @app.route("/api/clientes", methods=["GET"])
@@ -1090,8 +1055,6 @@ async def api_login():
         autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
     except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
         return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
-    except (MySQLdb.InterfaceError, MySQLdb.MySQLError):
-        return responder_json({"ok": False, "erro": "Não foi possível conectar ao banco de dados."}, 503)
     if not autenticado:
         return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 
@@ -1108,22 +1071,6 @@ async def api_login():
             "banco": nome_banco,
         }
     )
-
-
-@app.route("/", methods=["GET"])
-def pagina_inicial():
-    return send_from_directory(BASE_DIR, "login.html")
-
-
-@app.route("/<path:arquivo>", methods=["GET"])
-def servir_arquivos_publicos(arquivo):
-    if arquivo.startswith("api/"):
-        abort(404)
-    if arquivo.startswith("assets/"):
-        return send_from_directory(BASE_DIR, arquivo)
-    if arquivo in ARQUIVOS_PUBLICOS:
-        return send_from_directory(BASE_DIR, arquivo)
-    abort(404)
 
 
 if __name__ == "__main__":
