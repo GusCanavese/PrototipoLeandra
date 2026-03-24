@@ -10,7 +10,7 @@ from threading import Lock
 
 import MySQLdb
 import MySQLdb.cursors
-from flask import Flask, jsonify, make_response, request
+from flask import Flask, abort, jsonify, make_response, request, send_from_directory
 
 host     = "ballast.proxy.rlwy.net"
 user     = "root"
@@ -25,6 +25,16 @@ DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
 app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ARQUIVOS_PUBLICOS = {
+    "index.html",
+    "login.html",
+    "admin.html",
+    "cliente.html",
+    "create.html",
+    "details.html",
+    "cadastro-cliente.html",
+}
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
@@ -1091,6 +1101,22 @@ async def api_login():
             "banco": nome_banco,
         }
     )
+
+
+@app.route("/", methods=["GET"])
+def pagina_inicial():
+    return send_from_directory(BASE_DIR, "login.html")
+
+
+@app.route("/<path:arquivo>", methods=["GET"])
+def servir_arquivos_publicos(arquivo):
+    if arquivo.startswith("api/"):
+        abort(404)
+    if arquivo.startswith("assets/"):
+        return send_from_directory(BASE_DIR, arquivo)
+    if arquivo in ARQUIVOS_PUBLICOS:
+        return send_from_directory(BASE_DIR, arquivo)
+    abort(404)
 
 
 if __name__ == "__main__":
