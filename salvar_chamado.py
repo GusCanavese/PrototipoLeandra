@@ -930,6 +930,26 @@ def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
 
 
+@app.route("/api/health", methods=["GET"])
+def healthcheck():
+    payload = {"status": "ok"}
+    if configuracao_banco_incompleta():
+        payload["database"] = "unconfigured"
+        return responder_json(payload, 200)
+
+    try:
+        with conexao_pool(db) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+        payload["database"] = "ok"
+    except Exception:
+        payload["database"] = "unavailable"
+
+    return responder_json(payload, 200)
+
+
 @app.route("/api/projetos", methods=["GET"])
 async def api_projetos_listar():
     try:
