@@ -1883,16 +1883,16 @@ async function configurarTelaLogin() {
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
-    const usuario = document.getElementById("campo-usuario").value.trim();
+    const identificador = document.getElementById("campo-usuario").value.trim();
     const senha = document.getElementById("campo-senha").value.trim();
     try {
       const autenticacao = await requisicaoApi("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario, senha, banco: obterBancoProjetoAtual()}),
+        body: JSON.stringify({ usuario: identificador, senha, banco: obterBancoProjetoAtual()}),
       });
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
-        usuario,
+        usuario: autenticacao.usuario || identificador,
         tipo: normalizarTipoUsuario(autenticacao.tipo),
         clienteId: autenticacao.clienteId,
         precisaTrocarSenha: Boolean(autenticacao.precisaTrocarSenha),
