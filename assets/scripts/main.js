@@ -81,6 +81,37 @@ function definirBancoProjetoAtivo(nomeBanco) {
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
 }
 
+function obterLoginPreCadastro() {
+  return (sessionStorage.getItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO) || "").trim();
+}
+
+function limparLoginPreCadastro() {
+  sessionStorage.removeItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO);
+}
+
+function obterRotaRetornoCadastro() {
+  return (sessionStorage.getItem(CHAVE_STORAGE_RETORNO_CADASTRO) || "").trim();
+}
+
+function limparRotaRetornoCadastro() {
+  sessionStorage.removeItem(CHAVE_STORAGE_RETORNO_CADASTRO);
+}
+
+function prepararFluxoCadastroUsuario({ login = "", retorno = ROTA_PADRAO_POS_CADASTRO } = {}) {
+  const loginNormalizado = (login || "").trim().toLowerCase();
+  const rotaRetorno = (retorno || ROTA_PADRAO_POS_CADASTRO).trim() || ROTA_PADRAO_POS_CADASTRO;
+
+  if (loginNormalizado) sessionStorage.setItem(CHAVE_STORAGE_LOGIN_PRE_CADASTRO, loginNormalizado);
+  else limparLoginPreCadastro();
+
+  sessionStorage.setItem(CHAVE_STORAGE_RETORNO_CADASTRO, rotaRetorno);
+
+  const destino = loginNormalizado
+    ? `cadastro-cliente.html?login=${encodeURIComponent(loginNormalizado)}`
+    : "cadastro-cliente.html";
+  window.location.href = destino;
+}
+
 
 
 function alternarLoadingProcessamento(ativo) {
@@ -1628,8 +1659,16 @@ function registrarFormularioCadastroCliente() {
   const campoLogin = document.getElementById("campo-cadastro-login");
   const campoTipo = document.getElementById("campo-cadastro-tipo");
   const textoAjudaTipo = document.getElementById("texto-ajuda-tipo-cadastro");
+  const botaoSubmit = form.querySelector('button[type="submit"]');
   const loginPreenchido = new URLSearchParams(window.location.search).get("login");
   if (loginPreenchido) campoLogin.value = loginPreenchido;
+
+  function exibirAlertaCadastro(tipo, mensagem) {
+    if (!alerta) return;
+    alerta.className = `alert alert-${tipo}`;
+    alerta.classList.remove("d-none");
+    alerta.textContent = mensagem;
+  }
 
   if (campoTipo) {
     const tiposPermitidos = [
@@ -1656,22 +1695,22 @@ function registrarFormularioCadastroCliente() {
       tipo: tipoSelecionado,
     };
 
-    if (!novoUsuario.nomeCompleto || !novoUsuario.telefone || !novoUsuario.email || !novoUsuario.documento || !novoUsuario.login || !novoUsuario.senha) return;
+    if (!novoUsuario.nomeCompleto || !novoUsuario.telefone || !novoUsuario.email || !novoUsuario.documento || !novoUsuario.login || !novoUsuario.senha) {
+      exibirAlertaCadastro("danger", "Preencha todos os campos obrigatórios antes de salvar.");
+      return;
+    }
+
     if (!usuarioPodeCriarTipoUsuario(tipoSelecionado)) {
-      if (alerta) {
-        alerta.className = "alert alert-danger";
-        alerta.textContent = "Você não tem permissão para criar esse tipo de usuário.";
-      }
+      exibirAlertaCadastro("danger", "Você não tem permissão para criar esse tipo de usuário.");
       return;
     }
 
     if (credenciaisLogin[novoUsuario.login] || obterClientePorLogin(novoUsuario.login)) {
-      if (alerta) {
-        alerta.className = "alert alert-danger";
-        alerta.textContent = "Usuário já cadastrado no sistema. Informe outro login.";
-      }
+      exibirAlertaCadastro("danger", "Usuário já cadastrado no sistema. Informe outro login.");
       return;
     }
+
+    if (botaoSubmit) botaoSubmit.disabled = true;
 
     try {
       await salvarClienteIndividual(novoUsuario);
@@ -1680,25 +1719,27 @@ function registrarFormularioCadastroCliente() {
         escreverCacheSessao(CHAVE_CACHE_CLIENTES, clientes);
       }
     } catch (erro) {
-      if (alerta) {
-        alerta.className = "alert alert-danger";
-        alerta.textContent = erro.message || "Não foi possível cadastrar o usuário.";
-      }
+      exibirAlertaCadastro("danger", erro.message || "Não foi possível cadastrar o usuário.");
+      if (botaoSubmit) botaoSubmit.disabled = false;
       return;
     }
 
-    if (alerta) {
-      alerta.className = "alert alert-success";
-      alerta.textContent = tipoSelecionado === "Cliente"
+    exibirAlertaCadastro(
+      "success",
+      tipoSelecionado === "Cliente"
         ? "Cliente cadastrado com sucesso. Agora você pode abrir o chamado."
-        : "Usuário cadastrado com sucesso.";
-    }
+        : "Usuário cadastrado com sucesso.",
+    );
 
     limparLoginPreCadastro();
     const rotaRetorno = obterRotaRetornoCadastro();
     limparRotaRetornoCadastro();
 
     setTimeout(() => {
+      if (rotaRetorno) {
+        window.location.href = rotaRetorno;
+        return;
+      }
       window.location.href = tipoSelecionado === "Cliente"
         ? `create.html?clienteLogin=${encodeURIComponent(novoUsuario.login)}`
         : "index.html";
