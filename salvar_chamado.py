@@ -7,6 +7,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
 from typing import Optional
+import asyncio
 
 import pymysql
 from flask import Flask, jsonify, make_response, request, send_from_directory
@@ -1097,12 +1098,49 @@ def api_login():
             "tipo": tipo,
             "clienteId": cliente_id,
             "redirect": redirect,
+            "precisaTrocarSenha": bool(autenticado.get("primeiro_acesso")) and tipo in {"Cliente", "Advogado"},
             "banco": nome_banco,
         }
     )
 
+async def executar_em_thread(funcao, *args, **kwargs):
+    return await asyncio.to_thread(funcao, *args, **kwargs)
+
+
+
+@app.route("/api/usuarios/primeiro-acesso", methods=["POST"])
+async def api_primeiro_acesso():
+    dados = request.json or {}
+    usuario = (dados.get("usuario") or "").strip()
+    senha_atual = (dados.get("senhaAtual") or "").strip()
+    nova_senha = (dados.get("novaSenha") or "").strip()
+
+    try:
+        nome_banco = dados.get("banco") or "teste"
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
+        if not valido:
+            raise ValueError("Nome de banco invÃ¡lido.")
+        resultado = await executar_em_thread(
+            trocar_senha_primeiro_acesso,
+            nome_banco,
+            usuario,
+            senha_atual,
+            nova_senha,
+        )
+        tipo = resultado["tipo"]
+        return responder_json(
+            {
+                "ok": True,
+                "usuario": usuario,
+                "tipo": tipo,
+                "clienteId": usuario if tipo == "Cliente" else "",
+                "redirect": "index.html" if tipo == "Advogado" else "cliente.html",
+                "banco": nome_banco,
+            }
+        )
+    except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
 
 if __name__ == "__main__":
-    porta_http = int(os.getenv("PORT", "5000"))
-    debug = os.getenv("FLASK_DEBUG", "").lower() in {"1", "true", "yes"}
-    app.run(host="0.0.0.0", port=porta_http, debug=debug)
+    app.run(host="0.0.0.0", port=5000, debug=True)
