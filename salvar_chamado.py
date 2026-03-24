@@ -12,12 +12,15 @@ import MySQLdb
 import MySQLdb.cursors
 from flask import Flask, abort, jsonify, make_response, request, send_from_directory
 
-host     = "ballast.proxy.rlwy.net"
-user     = "root"
-password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-db       = "teste"
-port     =  15192
-nome_banco = "teste"
+host = (os.getenv("MYSQLHOST") or "").strip()
+user = (os.getenv("MYSQLUSER") or "").strip()
+password = os.getenv("MYSQLPASSWORD") or ""
+db = (os.getenv("MYSQLDATABASE") or "teste").strip()
+nome_banco = db
+try:
+    port = int(os.getenv("MYSQLPORT", "0"))
+except ValueError:
+    port = 0
 
 
 POOL_SIZE = 8
@@ -966,7 +969,9 @@ async def api_projetos_listar():
         projetos = await executar_em_thread(listar_bancos_disponiveis)
         return responder_json({"projetos": projetos, "padrao": "teste"})
     except RuntimeError as erro:
-        return responder_json({"ok": False, "erro": str(erro)}, 500)
+        return responder_json({"ok": False, "erro": str(erro), "projetos": ["teste"], "padrao": "teste"}, 200)
+    except MySQLdb.MySQLError:
+        return responder_json({"ok": False, "erro": "Banco de dados indisponível no momento.", "projetos": ["teste"], "padrao": "teste"}, 200)
 
 
 @app.route("/api/clientes", methods=["GET"])
@@ -1085,6 +1090,8 @@ async def api_login():
         autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
     except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
         return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
+    except (MySQLdb.InterfaceError, MySQLdb.MySQLError):
+        return responder_json({"ok": False, "erro": "Não foi possível conectar ao banco de dados."}, 503)
     if not autenticado:
         return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 
