@@ -112,6 +112,29 @@ function prepararFluxoCadastroUsuario({ login = "", retorno = ROTA_PADRAO_POS_CA
   window.location.href = destino;
 }
 
+function salvarChamadoAtualSelecionado(idChamado) {
+  const idNormalizado = String(idChamado || "").trim();
+  if (!idNormalizado) return;
+  sessionStorage.setItem(CHAVE_STORAGE_CHAMADO_ATUAL, idNormalizado);
+}
+
+function obterChamadoAtualSelecionado() {
+  const idQuery = new URLSearchParams(window.location.search).get("id");
+  if (idQuery && idQuery.trim()) {
+    const idNormalizado = idQuery.trim();
+    salvarChamadoAtualSelecionado(idNormalizado);
+    return idNormalizado;
+  }
+  return (sessionStorage.getItem(CHAVE_STORAGE_CHAMADO_ATUAL) || "").trim();
+}
+
+function abrirDetalhesChamado(idChamado) {
+  const idNormalizado = String(idChamado || "").trim();
+  if (!idNormalizado) return;
+  salvarChamadoAtualSelecionado(idNormalizado);
+  window.location.href = `details.html?id=${encodeURIComponent(idNormalizado)}`;
+}
+
 
 
 function alternarLoadingProcessamento(ativo) {
