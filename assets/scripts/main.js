@@ -253,6 +253,35 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
   }
 }
 
+
+function definirChamadoAtualSelecionado(idChamado) {
+  const idNormalizado = (idChamado || "").trim();
+  if (!idNormalizado) {
+    sessionStorage.removeItem(CHAVE_STORAGE_CHAMADO_ATUAL);
+    return "";
+  }
+  sessionStorage.setItem(CHAVE_STORAGE_CHAMADO_ATUAL, idNormalizado);
+  return idNormalizado;
+}
+
+function obterChamadoAtualSelecionado() {
+  const idNaQuery = (new URLSearchParams(window.location.search).get("id") || "").trim();
+  if (idNaQuery) {
+    definirChamadoAtualSelecionado(idNaQuery);
+    return idNaQuery;
+  }
+  return (sessionStorage.getItem(CHAVE_STORAGE_CHAMADO_ATUAL) || "").trim();
+}
+
+function abrirDetalhesChamado(idChamado) {
+  const idSelecionado = definirChamadoAtualSelecionado(idChamado);
+  if (!idSelecionado) {
+    alert("Não foi possível abrir este chamado. Identificador inválido.");
+    return;
+  }
+  window.location.href = `details.html?id=${encodeURIComponent(idSelecionado)}`;
+}
+
 function lerCacheChamados() {
   try {
     const bruto = sessionStorage.getItem(CHAVE_CACHE_CHAMADOS);
