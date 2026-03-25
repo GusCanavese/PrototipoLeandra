@@ -8,6 +8,15 @@ from queue import Empty, Queue
 from threading import Lock
 from typing import Optional
 import asyncio
+from werkzeug.security import check_password_hash, generate_password_hash
+import os
+import ssl
+import hmac
+import hashlib
+import secrets
+import smtplib
+import asyncio
+from email.message import EmailMessage
 
 import pymysql
 from flask import Flask, jsonify, make_response, request, send_from_directory
@@ -50,6 +59,15 @@ usuarios_cache = {}
 
 _connection_lock = Lock()
 _pools = {}
+_rate_limit_lock = Lock()
+rate_limit_cache = {}
+
+PASSWORD_RESET_TOKEN_TTL_MINUTES = 15
+PASSWORD_RESET_REQUEST_LIMIT = 5
+PASSWORD_RESET_REQUEST_WINDOW_SECONDS = 15 * 60
+PASSWORD_RESET_VALIDATE_LIMIT = 8
+PASSWORD_RESET_VALIDATE_WINDOW_SECONDS = 15 * 60
+PASSWORD_RESET_MAX_FAILED_ATTEMPTS = 5
 
 
 
