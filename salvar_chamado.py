@@ -418,6 +418,32 @@ def garantir_coluna_primeiro_acesso(conn):
         cursor.close()
 
 
+def garantir_coluna_email(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'usuarios'
+              AND COLUMN_NAME = 'email'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE usuarios
+                ADD COLUMN email VARCHAR(255) NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
 def preparar_tabela_usuarios(nome_banco):
     agora = datetime.now()
     cache = usuarios_cache.get(nome_banco)
@@ -426,6 +452,7 @@ def preparar_tabela_usuarios(nome_banco):
 
     def operacao(conn):
         garantir_coluna_primeiro_acesso(conn)
+        garantir_coluna_email(conn)
 
     _executar_com_retry(nome_banco, operacao)
     usuarios_cache[nome_banco] = agora + timedelta(minutes=10)
@@ -487,7 +514,7 @@ def listar_clientes(nome_banco):
     registros = executar_select(
         nome_banco,
         """
-        SELECT usuario, senha, nome_completo, telefone, documento
+        SELECT usuario, senha, nome_completo, telefone, documento, email
         FROM usuarios
         WHERE tipo = 'Cliente'
         ORDER BY usuario
@@ -498,6 +525,7 @@ def listar_clientes(nome_banco):
             "nomeCompleto": r["nome_completo"] or "",
             "telefone": r["telefone"] or "",
             "documento": r["documento"] or "",
+            "email": (r.get("email") or "").strip().lower(),
             "login": r["usuario"],
             "senha": r["senha"],
         }
@@ -513,8 +541,8 @@ def substituir_clientes(nome_banco, clientes):
         for cliente in clientes:
             cursor.execute(
                 """
-                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, primeiro_acesso)
-                VALUES (%s, %s, 'Cliente', %s, %s, %s, %s)
+                INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, email, primeiro_acesso)
+                VALUES (%s, %s, 'Cliente', %s, %s, %s, %s, %s)
                 """,
                 (
                     cliente["login"],
@@ -522,6 +550,7 @@ def substituir_clientes(nome_banco, clientes):
                     cliente.get("nomeCompleto") or None,
                     cliente.get("telefone") or None,
                     cliente.get("documento") or None,
+                    (cliente.get("email") or "").strip().lower() or None,
                     1,
                 ),
             )
@@ -541,8 +570,8 @@ def inserir_cliente(nome_banco, cliente):
     executar_write(
         nome_banco,
         """
-        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, primeiro_acesso)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO usuarios (usuario, senha, tipo, nome_completo, telefone, documento, email, primeiro_acesso)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             cliente["login"],
@@ -551,6 +580,7 @@ def inserir_cliente(nome_banco, cliente):
             cliente.get("nomeCompleto") or None,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
+            (cliente.get("email") or "").strip().lower() or None,
             1 if tipo in {"Cliente", "Advogado"} else 0,
         ),
     )
@@ -907,10 +937,17 @@ def excluir_chamado(nome_banco, id_chamado):
 
 def autenticar_usuario(nome_banco, usuario, senha):
     preparar_tabela_usuarios(nome_banco)
+    identificador = (usuario or "").strip().lower()
     registro = executar_select(
         nome_banco,
-        "SELECT usuario, senha, tipo, primeiro_acesso FROM usuarios WHERE usuario = %s LIMIT 1",
-        (usuario,),
+        """
+        SELECT usuario, senha, tipo, primeiro_acesso, email
+        FROM usuarios
+        WHERE LOWER(usuario) = %s
+           OR (email IS NOT NULL AND LOWER(email) = %s)
+        LIMIT 1
+        """,
+        (identificador, identificador),
         fetch_one=True,
     )
     if not registro or registro["senha"] != senha:
@@ -1057,7 +1094,7 @@ async def api_login():
     return responder_json(
         {
             "ok": True,
-            "usuario": usuario,
+            "usuario": autenticado["usuario"],
             "tipo": tipo,
             "clienteId": cliente_id,
             "redirect": redirect,

@@ -123,6 +123,29 @@ function prepararFluxoCadastroUsuario({ login = "", retorno = ROTA_PADRAO_POS_CA
   window.location.href = destino;
 }
 
+function salvarChamadoAtualSelecionado(idChamado) {
+  const idNormalizado = String(idChamado || "").trim();
+  if (!idNormalizado) return;
+  sessionStorage.setItem(CHAVE_STORAGE_CHAMADO_ATUAL, idNormalizado);
+}
+
+function obterChamadoAtualSelecionado() {
+  const idQuery = new URLSearchParams(window.location.search).get("id");
+  if (idQuery && idQuery.trim()) {
+    const idNormalizado = idQuery.trim();
+    salvarChamadoAtualSelecionado(idNormalizado);
+    return idNormalizado;
+  }
+  return (sessionStorage.getItem(CHAVE_STORAGE_CHAMADO_ATUAL) || "").trim();
+}
+
+function abrirDetalhesChamado(idChamado) {
+  const idNormalizado = String(idChamado || "").trim();
+  if (!idNormalizado) return;
+  salvarChamadoAtualSelecionado(idNormalizado);
+  window.location.href = `details.html?id=${encodeURIComponent(idNormalizado)}`;
+}
+
 
 
 function alternarLoadingProcessamento(ativo) {
@@ -1894,16 +1917,16 @@ async function configurarTelaLogin() {
 
   form.addEventListener("submit", async (evento) => {
     evento.preventDefault();
-    const usuario = document.getElementById("campo-usuario").value.trim();
+    const identificador = document.getElementById("campo-usuario").value.trim();
     const senha = document.getElementById("campo-senha").value.trim();
     try {
       const autenticacao = await requisicaoApi("/login", {
         method: "POST",
-        body: JSON.stringify({ usuario, senha, banco: obterBancoProjetoAtual()}),
+        body: JSON.stringify({ usuario: identificador, senha, banco: obterBancoProjetoAtual()}),
       });
       if (autenticacao.banco) definirBancoProjetoAtivo(autenticacao.banco);
       salvarUsuarioAutenticado({
-        usuario,
+        usuario: autenticacao.usuario || identificador,
         tipo: normalizarTipoUsuario(autenticacao.tipo),
         clienteId: autenticacao.clienteId,
         precisaTrocarSenha: Boolean(autenticacao.precisaTrocarSenha),
