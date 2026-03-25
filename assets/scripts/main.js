@@ -1837,6 +1837,11 @@ function atualizarAcoesCabecalhoAdministrador() {
   const botoesAdmin = document.querySelectorAll("[data-acao-admin='cadastrar-usuario']");
   const exibir = usuarioPodeCadastrarUsuarios();
   botoesAdmin.forEach((botao) => botao.classList.toggle("d-none", !exibir));
+
+  const botaoProjetos = document.getElementById("btn-projetos");
+  if (botaoProjetos) {
+    botaoProjetos.classList.toggle("d-none", !usuarioEhAdministrador());
+  }
 }
 
 function registrarBotoesTrocaUsuario() {
