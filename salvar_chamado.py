@@ -70,6 +70,23 @@ PASSWORD_RESET_VALIDATE_WINDOW_SECONDS = 15 * 60
 PASSWORD_RESET_MAX_FAILED_ATTEMPTS = 5
 
 
+def ler_bool_env(nome_variavel, padrao=False):
+    valor = os.getenv(nome_variavel)
+    if valor is None:
+        return padrao
+    return str(valor).strip().lower() in {"1", "true", "yes", "on", "sim"}
+
+
+def ler_int_env(nome_variavel, padrao):
+    valor = os.getenv(nome_variavel)
+    if valor is None:
+        return padrao
+    try:
+        return int(str(valor).strip())
+    except (TypeError, ValueError):
+        return padrao
+
+
 
 def criar_conexao(nome_banco=None):
     if configuracao_banco_incompleta():
@@ -323,10 +340,10 @@ def obter_config_email():
     usuario_email = (os.getenv("SMTP_USERNAME") or "").strip()
     senha_email = os.getenv("SMTP_PASSWORD") or ""
     remetente = (os.getenv("SMTP_FROM_EMAIL") or usuario_email).strip()
-    porta = int(os.getenv("SMTP_PORT") or "587")
-    usar_ssl = (os.getenv("SMTP_USE_SSL") or "0").strip() == "1"
-    usar_tls = (os.getenv("SMTP_USE_TLS") or "1").strip() != "0"
-    suppress = (os.getenv("SMTP_SUPPRESS_SEND") or "0").strip() == "1"
+    porta = ler_int_env("SMTP_PORT", 587)
+    usar_ssl = ler_bool_env("SMTP_USE_SSL", False)
+    usar_tls = ler_bool_env("SMTP_USE_TLS", True)
+    suppress = ler_bool_env("SMTP_SUPPRESS_SEND", False)
 
     return {
         "host": host_email,
@@ -1600,5 +1617,14 @@ async def api_esqueci_senha_redefinir():
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    return responder_json({"ok": True, "status": "healthy"}, 200)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=ler_int_env("PORT", 5000),
+        debug=ler_bool_env("FLASK_DEBUG", False),
+    )
