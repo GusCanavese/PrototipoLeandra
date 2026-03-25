@@ -14,8 +14,6 @@ from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
 
-from dotenv import load_dotenv
-load_dotenv()
 
 import MySQLdb
 import MySQLdb.cursors
