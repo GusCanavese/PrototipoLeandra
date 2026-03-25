@@ -45,78 +45,10 @@
                     <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
                   </div>
                 </div>
-                <div class="text-end">
-                  <button type="button" class="btn btn-link btn-sm px-0" id="btn-esqueci-senha">
-                    Esqueci a senha
-                  </button>
-                </div>
                 <button type="submit" class="btn btn-primary w-100">
                   Entrar
                 </button>
               </form>
-
-              <div class="d-none" id="card-esqueci-senha">
-                <div class="border-top pt-4 mt-4">
-                  <h2 class="h5 text-primary text-center mb-1">Recuperar senha</h2>
-                  <p class="text-muted small text-center mb-3" id="texto-etapa-reset">
-                    Informe o e-mail cadastrado para receber um código de 6 dígitos.
-                  </p>
-
-                  <div class="alert d-none" id="alerta-reset-senha" role="alert"></div>
-
-                  <form id="form-reset-solicitar" class="vstack gap-3">
-                    <div>
-                      <label for="campo-reset-email" class="form-label">E-mail</label>
-                      <input type="email" id="campo-reset-email" class="form-control" placeholder="voce@exemplo.com" required />
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">Enviar código</button>
-                  </form>
-
-                  <form id="form-reset-validar" class="vstack gap-3 d-none">
-                    <div>
-                      <label for="campo-reset-codigo" class="form-label">Código de verificação</label>
-                      <input
-                        type="text"
-                        id="campo-reset-codigo"
-                        class="form-control"
-                        inputmode="numeric"
-                        maxlength="6"
-                        pattern="\d{6}"
-                        placeholder="000000"
-                        required
-                      />
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">Validar código</button>
-                  </form>
-
-                  <form id="form-reset-redefinir" class="vstack gap-3 d-none">
-                    <div>
-                      <label for="campo-reset-nova-senha" class="form-label">Nova senha</label>
-                      <div class="input-group">
-                        <input type="password" id="campo-reset-nova-senha" class="form-control" minlength="8" required />
-                        <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-reset-nova-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
-                      </div>
-                    </div>
-                    <div>
-                      <label for="campo-reset-confirmar-senha" class="form-label">Confirmar nova senha</label>
-                      <div class="input-group">
-                        <input type="password" id="campo-reset-confirmar-senha" class="form-control" minlength="8" required />
-                        <button class="btn btn-outline-secondary" type="button" data-toggle-password="#campo-reset-confirmar-senha" aria-label="Mostrar senha" aria-pressed="false">👁</button>
-                      </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">Salvar nova senha</button>
-                  </form>
-
-                  <div class="text-center mt-3 d-flex justify-content-center gap-2 flex-wrap">
-                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-reset-voltar-login">
-                      Voltar ao login
-                    </button>
-                    <button type="button" class="btn btn-outline-primary btn-sm d-none" id="btn-reset-reenviar-codigo">
-                      Reenviar código
-                    </button>
-                  </div>
-                </div>
-              </div>
 
               <div class="d-none" id="card-primeiro-acesso">
                 <div class="border-top pt-4 mt-4">
