@@ -1,15 +1,6 @@
 import json
 import os
 import re
-import os
-import ssl
-import hmac
-import hashlib
-import secrets
-import smtplib
-import asyncio
-import pymysql
-from email.message import EmailMessage
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,16 +8,13 @@ from queue import Empty, Queue
 from threading import Lock
 from typing import Optional
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import MySQLdb
-import MySQLdb.cursors
+import pymysql
 from flask import Flask, jsonify, make_response, request, send_from_directory
-from werkzeug.security import check_password_hash, generate_password_hash
 
 pymysql.install_as_MySQLdb()
 
+import MySQLdb
+import MySQLdb.cursors
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_PAGES = {
@@ -58,18 +46,9 @@ bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
 tabelas_atualizacoes_cache = {}
 usuarios_cache = {}
-rate_limit_cache = {}
 
 _connection_lock = Lock()
 _pools = {}
-_rate_limit_lock = Lock()
-
-PASSWORD_RESET_TOKEN_TTL_MINUTES = 15
-PASSWORD_RESET_REQUEST_LIMIT = 5
-PASSWORD_RESET_REQUEST_WINDOW_SECONDS = 15 * 60
-PASSWORD_RESET_VALIDATE_LIMIT = 8
-PASSWORD_RESET_VALIDATE_WINDOW_SECONDS = 15 * 60
-PASSWORD_RESET_MAX_FAILED_ATTEMPTS = 5
 
 
 
@@ -245,140 +224,6 @@ def obter_banco_requisicao():
     except (MySQLdb.OperationalError, MySQLdb.ProgrammingError) as erro:
         raise ValueError(f"Banco '{nome_banco}' não encontrado.") from erro
     return nome_banco
-
-def normalizar_email(email):
-    return (email or "").strip().lower()
-
-
-def hash_senha(senha):
-    if not senha:
-        raise ValueError("Senha obrigatória.")
-    if len(senha) < 8:
-        raise ValueError("A senha deve ter pelo menos 8 caracteres.")
-    return generate_password_hash(senha)
-
-
-def senha_usa_hash(valor):
-    return isinstance(valor, str) and valor.startswith(("scrypt:", "pbkdf2:"))
-
-
-def verificar_senha(senha_informada, senha_salva):
-    if not senha_informada or not senha_salva:
-        return False
-    if senha_usa_hash(senha_salva):
-        try:
-            return check_password_hash(senha_salva, senha_informada)
-        except ValueError:
-            return False
-    return hmac.compare_digest(str(senha_salva), str(senha_informada))
-
-
-def token_hash(valor):
-    return hashlib.sha256((valor or "").encode("utf-8")).hexdigest()
-
-
-def gerar_codigo_reset():
-    return f"{secrets.randbelow(1000000):06d}"
-
-
-def gerar_token_sessao_reset():
-    return secrets.token_urlsafe(32)
-
-
-def obter_ip_requisicao():
-    cabecalho = (request.headers.get("X-Forwarded-For") or "").strip()
-    if cabecalho:
-        return cabecalho.split(",")[0].strip()
-    return (request.remote_addr or "desconhecido").strip() or "desconhecido"
-
-
-def aplicar_rate_limit(chave, limite, janela_segundos):
-    agora = datetime.now()
-    with _rate_limit_lock:
-        entradas = [
-            instante
-            for instante in rate_limit_cache.get(chave, [])
-            if (agora - instante).total_seconds() < janela_segundos
-        ]
-        if len(entradas) >= limite:
-            rate_limit_cache[chave] = entradas
-            raise ValueError("Muitas tentativas. Aguarde alguns minutos e tente novamente.")
-        entradas.append(agora)
-        rate_limit_cache[chave] = entradas
-
-
-def limitar_solicitacao_reset(email):
-    chave_email = hashlib.sha256(normalizar_email(email).encode("utf-8")).hexdigest()
-    chave = f"pwd-reset:request:{obter_ip_requisicao()}:{chave_email}"
-    aplicar_rate_limit(chave, PASSWORD_RESET_REQUEST_LIMIT, PASSWORD_RESET_REQUEST_WINDOW_SECONDS)
-
-
-def limitar_validacao_reset(email):
-    chave_email = hashlib.sha256(normalizar_email(email).encode("utf-8")).hexdigest()
-    chave = f"pwd-reset:validate:{obter_ip_requisicao()}:{chave_email}"
-    aplicar_rate_limit(chave, PASSWORD_RESET_VALIDATE_LIMIT, PASSWORD_RESET_VALIDATE_WINDOW_SECONDS)
-
-
-def obter_config_email():
-    host_email = (os.getenv("SMTP_HOST") or "").strip()
-    usuario_email = (os.getenv("SMTP_USERNAME") or "").strip()
-    senha_email = os.getenv("SMTP_PASSWORD") or ""
-    remetente = (os.getenv("SMTP_FROM_EMAIL") or usuario_email).strip()
-    porta = int(os.getenv("SMTP_PORT") or "587")
-    usar_ssl = (os.getenv("SMTP_USE_SSL") or "0").strip() == "1"
-    usar_tls = (os.getenv("SMTP_USE_TLS") or "1").strip() != "0"
-    suppress = (os.getenv("SMTP_SUPPRESS_SEND") or "0").strip() == "1"
-
-    return {
-        "host": host_email,
-        "port": porta,
-        "username": usuario_email,
-        "password": senha_email,
-        "from_email": remetente,
-        "use_ssl": usar_ssl,
-        "use_tls": usar_tls and not usar_ssl,
-        "suppress_send": suppress,
-    }
-
-
-def enviar_email_codigo_reset(destinatario, codigo):
-    config = obter_config_email()
-    if config["suppress_send"]:
-        print(f"[password-reset] Código para {destinatario}: {codigo}")
-        return
-    if not config["host"] or not config["from_email"]:
-        print(f"[password-reset] SMTP não configurado. Código gerado para {destinatario}: {codigo}")
-        return
-
-    mensagem = EmailMessage()
-    mensagem["Subject"] = "Redefinição de senha"
-    mensagem["From"] = config["from_email"]
-    mensagem["To"] = destinatario
-    mensagem.set_content(
-        (
-            "Você solicitou a redefinição da sua senha.\n\n"
-            f"Use este código de 6 dígitos: {codigo}\n"
-            f"Validade: {PASSWORD_RESET_TOKEN_TTL_MINUTES} minutos.\n\n"
-            "Se você não fez essa solicitação, ignore este e-mail."
-        )
-    )
-
-    contexto_ssl = ssl.create_default_context()
-    if config["use_ssl"]:
-        with smtplib.SMTP_SSL(config["host"], config["port"], context=contexto_ssl, timeout=15) as servidor:
-            if config["username"]:
-                servidor.login(config["username"], config["password"])
-            servidor.send_message(mensagem)
-        return
-
-    with smtplib.SMTP(config["host"], config["port"], timeout=15) as servidor:
-        servidor.ehlo()
-        if config["use_tls"]:
-            servidor.starttls(context=contexto_ssl)
-            servidor.ehlo()
-        if config["username"]:
-            servidor.login(config["username"], config["password"])
-        servidor.send_message(mensagem)
 
 
 def normalizar_anexos(anexos):
@@ -619,8 +464,7 @@ def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
         raise ValueError(f"Parâmetro deve estar entre {minimo} e {maximo}.")
     return numero
 
-async def executar_em_thread(funcao, args, **kwargs):
-    return await asyncio.to_thread(funcao,args, **kwargs)
+
 
 def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=True):
     def operacao(conn):
@@ -673,8 +517,8 @@ def listar_clientes(nome_banco):
             "nomeCompleto": r["nome_completo"] or "",
             "telefone": r["telefone"] or "",
             "documento": r["documento"] or "",
-            "email": normalizar_email(r.get("email")),
             "login": r["usuario"],
+            "senha": r["senha"],
         }
         for r in registros
     ]
@@ -693,11 +537,10 @@ def substituir_clientes(nome_banco, clientes):
                 """,
                 (
                     cliente["login"],
-                    hash_senha(cliente["senha"]),
+                    cliente["senha"],
                     cliente.get("nomeCompleto") or None,
                     cliente.get("telefone") or None,
                     cliente.get("documento") or None,
-                    normalizar_email(cliente.get("email")) or None,
                     1,
                 ),
             )
@@ -722,12 +565,11 @@ def inserir_cliente(nome_banco, cliente):
         """,
         (
             cliente["login"],
-            hash_senha(cliente["senha"]),
+            cliente["senha"],
             tipo,
             cliente.get("nomeCompleto") or None,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
-            normalizar_email(cliente.get("email")) or None,
             1 if tipo in {"Cliente", "Advogado"} else 0,
         ),
     )
@@ -746,7 +588,7 @@ def trocar_senha_primeiro_acesso(nome_banco, usuario, senha_atual, nova_senha):
         (usuario,),
         fetch_one=True,
     )
-    if not registro or not verificar_senha(senha_atual, registro["senha"]):
+    if not registro or registro["senha"] != senha_atual:
         raise ValueError("Credenciais inválidas.")
 
     tipo_registro = registro["tipo"]
@@ -766,7 +608,7 @@ def trocar_senha_primeiro_acesso(nome_banco, usuario, senha_atual, nova_senha):
             primeiro_acesso = 0
         WHERE usuario = %s
         """,
-        (hash_senha(nova_senha), usuario),
+        (nova_senha, usuario),
     )
 
     return {
@@ -774,186 +616,6 @@ def trocar_senha_primeiro_acesso(nome_banco, usuario, senha_atual, nova_senha):
         "tipo": tipo,
     }
 
-
-def buscar_usuario_por_email(nome_banco, email):
-    preparar_tabela_usuarios(nome_banco)
-    return executar_select(
-        nome_banco,
-        """
-        SELECT usuario, email, tipo
-        FROM usuarios
-        WHERE email IS NOT NULL
-          AND LOWER(email) = %s
-        LIMIT 1
-        """,
-        (normalizar_email(email),),
-        fetch_one=True,
-    )
-
-
-def solicitar_reset_senha(nome_banco, email, request_ip):
-    preparar_tabela_usuarios(nome_banco)
-    email_normalizado = normalizar_email(email)
-    if not email_normalizado:
-        raise ValueError("Informe um e-mail válido.")
-
-    usuario = buscar_usuario_por_email(nome_banco, email_normalizado)
-    if not usuario:
-        return {"ok": True, "mensagem": "código enviado"}
-
-    codigo = gerar_codigo_reset()
-    agora = datetime.now()
-    expira_em = agora + timedelta(minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES)
-    hash_codigo = token_hash(codigo)
-
-    def transacao(conn):
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE password_reset_tokens
-            SET used_at = COALESCE(used_at, %s)
-            WHERE usuario_login = %s
-              AND used_at IS NULL
-            """,
-            (agora, usuario["usuario"]),
-        )
-        cursor.execute(
-            """
-            INSERT INTO password_reset_tokens (
-                usuario_login,
-                email,
-                token_hash,
-                reset_session_hash,
-                expires_at,
-                request_ip
-            ) VALUES (%s, %s, %s, NULL, %s, %s)
-            """,
-            (
-                usuario["usuario"],
-                email_normalizado,
-                hash_codigo,
-                expira_em,
-                request_ip or None,
-            ),
-        )
-        cursor.close()
-
-    executar_transacao(nome_banco, transacao)
-    try:
-        enviar_email_codigo_reset(email_normalizado, codigo)
-    except Exception as erro:
-        print(f"[password-reset] Falha ao enviar e-mail para {email_normalizado}: {erro}")
-
-    return {"ok": True, "mensagem": "código enviado"}
-
-
-def validar_codigo_reset_senha(nome_banco, email, codigo):
-    preparar_tabela_usuarios(nome_banco)
-    email_normalizado = normalizar_email(email)
-    codigo_normalizado = re.sub(r"\D", "", codigo or "")
-    if not email_normalizado or len(codigo_normalizado) != 6:
-        raise ValueError("Código inválido ou expirado.")
-
-    registro = executar_select(
-        nome_banco,
-        """
-        SELECT id, usuario_login, expires_at, used_at, validation_failures, token_hash
-        FROM password_reset_tokens
-        WHERE email = %s
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        (email_normalizado,),
-        fetch_one=True,
-    )
-    agora = datetime.now()
-    if not registro:
-        raise ValueError("Código inválido ou expirado.")
-    if registro["used_at"] is not None:
-        raise ValueError("Código inválido ou expirado.")
-    if registro["expires_at"] < agora:
-        raise ValueError("Código inválido ou expirado.")
-    if int(registro.get("validation_failures") or 0) >= PASSWORD_RESET_MAX_FAILED_ATTEMPTS:
-        raise ValueError("Código inválido ou expirado.")
-
-    if not hmac.compare_digest(registro["token_hash"], token_hash(codigo_normalizado)):
-        executar_write(
-            nome_banco,
-            """
-            UPDATE password_reset_tokens
-            SET validation_failures = validation_failures + 1
-            WHERE id = %s
-            """,
-            (registro["id"],),
-        )
-        raise ValueError("Código inválido ou expirado.")
-
-    reset_token = gerar_token_sessao_reset()
-    executar_write(
-        nome_banco,
-        """
-        UPDATE password_reset_tokens
-        SET used_at = %s,
-            reset_session_hash = %s
-        WHERE id = %s
-        """,
-        (agora, token_hash(reset_token), registro["id"]),
-    )
-
-    return {"resetToken": reset_token, "email": email_normalizado}
-
-
-def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
-    preparar_tabela_usuarios(nome_banco)
-    email_normalizado = normalizar_email(email)
-    if not email_normalizado or not reset_token:
-        raise ValueError("Sessão de redefinição inválida.")
-    if not nova_senha:
-        raise ValueError("Informe a nova senha.")
-
-    registro = executar_select(
-        nome_banco,
-        """
-        SELECT id, usuario_login, expires_at, reset_session_hash
-        FROM password_reset_tokens
-        WHERE email = %s
-          AND used_at IS NOT NULL
-          AND reset_session_hash IS NOT NULL
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        (email_normalizado,),
-        fetch_one=True,
-    )
-    agora = datetime.now()
-    if not registro or registro["expires_at"] < agora:
-        raise ValueError("Sessão de redefinição inválida.")
-    if not hmac.compare_digest(registro["reset_session_hash"], token_hash(reset_token)):
-        raise ValueError("Sessão de redefinição inválida.")
-
-    def transacao(conn):
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE usuarios
-            SET senha = %s,
-                primeiro_acesso = 0
-            WHERE usuario = %s
-            """,
-            (hash_senha(nova_senha), registro["usuario_login"]),
-        )
-        cursor.execute(
-            """
-            UPDATE password_reset_tokens
-            SET reset_session_hash = NULL
-            WHERE id = %s
-            """,
-            (registro["id"],),
-        )
-        cursor.close()
-
-    executar_transacao(nome_banco, transacao)
-    return {"ok": True}
 
 
 def listar_chamados(nome_banco, limite=50, offset=0):
@@ -1264,29 +926,16 @@ def excluir_chamado(nome_banco, id_chamado):
 
 def autenticar_usuario(nome_banco, usuario, senha):
     preparar_tabela_usuarios(nome_banco)
-    identificador = normalizar_email(usuario)
     registro = executar_select(
         nome_banco,
-        """
-        SELECT usuario, senha, tipo, primeiro_acesso, email
-        FROM usuarios
-        WHERE LOWER(usuario) = %s
-           OR (email IS NOT NULL AND LOWER(email) = %s)
-        LIMIT 1
-        """,
-        (identificador, identificador),
+        "SELECT usuario, senha, tipo, primeiro_acesso FROM usuarios WHERE usuario = %s LIMIT 1",
+        (usuario,),
         fetch_one=True,
     )
-    if not registro or not verificar_senha(senha, registro["senha"]):
+    if not registro or registro["senha"] != senha:
         return None
-    if not senha_usa_hash(registro["senha"]):
-        executar_write(
-            nome_banco,
-            "UPDATE usuarios SET senha = %s WHERE usuario = %s",
-            (hash_senha(senha), registro["usuario"]),
-        )
-        registro["senha"] = ""
     return registro
+
 
 @app.errorhandler(MySQLdb.MySQLError)
 def tratar_erro_mysql(erro):
@@ -1452,73 +1101,6 @@ def api_login():
         }
     )
 
-
-@app.route("/api/usuarios/esqueci-senha/solicitar", methods=["POST"])
-async def api_esqueci_senha_solicitar():
-    dados = request.json or {}
-    email = normalizar_email(dados.get("email"))
-
-    try:
-        nome_banco = dados.get("banco") or obter_banco_requisicao()
-        valido = await executar_em_thread(nome_banco_valido, nome_banco)
-        if not valido:
-            raise ValueError("Nome de banco inválido.")
-        limitar_solicitacao_reset(email)
-        resposta = await executar_em_thread(solicitar_reset_senha, nome_banco, email, obter_ip_requisicao())
-        resposta["banco"] = nome_banco
-        return responder_json(resposta)
-    except ValueError as erro:
-        status = 429 if "Muitas tentativas" in str(erro) else 400
-        return responder_json({"ok": False, "erro": str(erro)}, status)
-    except (RuntimeError, MySQLdb.MySQLError) as erro:
-        return responder_json({"ok": False, "erro": str(erro)}, 400)
-
-
-@app.route("/api/usuarios/esqueci-senha/validar", methods=["POST"])
-async def api_esqueci_senha_validar():
-    dados = request.json or {}
-    email = normalizar_email(dados.get("email"))
-    codigo = (dados.get("codigo") or "").strip()
-
-    try:
-        nome_banco = dados.get("banco") or obter_banco_requisicao()
-        valido = await executar_em_thread(nome_banco_valido, nome_banco)
-        if not valido:
-            raise ValueError("Nome de banco inválido.")
-        limitar_validacao_reset(email)
-        resposta = await executar_em_thread(validar_codigo_reset_senha, nome_banco, email, codigo)
-        resposta["ok"] = True
-        resposta["banco"] = nome_banco
-        return responder_json(resposta)
-    except ValueError as erro:
-        status = 429 if "Muitas tentativas" in str(erro) else 400
-        return responder_json({"ok": False, "erro": str(erro)}, status)
-    except (RuntimeError, MySQLdb.MySQLError) as erro:
-        return responder_json({"ok": False, "erro": str(erro)}, 400)
-
-
-@app.route("/api/usuarios/esqueci-senha/redefinir", methods=["POST"])
-async def api_esqueci_senha_redefinir():
-    dados = request.json or {}
-    email = normalizar_email(dados.get("email"))
-    reset_token = (dados.get("resetToken") or "").strip()
-    nova_senha = (dados.get("novaSenha") or "").strip()
-
-    try:
-        nome_banco = dados.get("banco") or obter_banco_requisicao()
-        valido = await executar_em_thread(nome_banco_valido, nome_banco)
-        if not valido:
-            raise ValueError("Nome de banco inválido.")
-        await executar_em_thread(redefinir_senha_com_token, nome_banco, email, reset_token, nova_senha)
-        return responder_json(
-            {
-                "ok": True,
-                "mensagem": "Senha redefinida com sucesso.",
-                "banco": nome_banco,
-            }
-        )
-    except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
-        return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 if __name__ == "__main__":
     porta_http = int(os.getenv("PORT", "5000"))
