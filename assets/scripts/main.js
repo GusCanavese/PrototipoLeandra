@@ -97,6 +97,17 @@ function limparRotaRetornoCadastro() {
   sessionStorage.removeItem(CHAVE_STORAGE_RETORNO_CADASTRO);
 }
 
+function obterChamadoAtualSelecionado() {
+  return (sessionStorage.getItem(CHAVE_STORAGE_CHAMADO_ATUAL) || "").trim();
+}
+
+function abrirDetalhesChamado(idChamado) {
+  const idNormalizado = (idChamado || "").toString().trim();
+  if (!idNormalizado) return;
+  sessionStorage.setItem(CHAVE_STORAGE_CHAMADO_ATUAL, idNormalizado);
+  window.location.href = "details.html";
+}
+
 function prepararFluxoCadastroUsuario({ login = "", retorno = ROTA_PADRAO_POS_CADASTRO } = {}) {
   const loginNormalizado = (login || "").trim().toLowerCase();
   const rotaRetorno = (retorno || ROTA_PADRAO_POS_CADASTRO).trim() || ROTA_PADRAO_POS_CADASTRO;
