@@ -1,14 +1,8 @@
 import json
 import os
 import re
-import hashlib
-import hmac
-import secrets
-import smtplib
-import ssl
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from email.message import EmailMessage
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
@@ -17,7 +11,6 @@ import asyncio
 
 import pymysql
 from flask import Flask, jsonify, make_response, request, send_from_directory
-from werkzeug.security import check_password_hash, generate_password_hash
 
 pymysql.install_as_MySQLdb()
 
@@ -46,12 +39,6 @@ nome_banco = db
 POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
-PASSWORD_RESET_TOKEN_TTL_MINUTES = 15
-PASSWORD_RESET_MAX_FAILED_ATTEMPTS = 5
-PASSWORD_RESET_REQUEST_LIMIT = 5
-PASSWORD_RESET_REQUEST_WINDOW_SECONDS = 15 * 60
-PASSWORD_RESET_VALIDATE_LIMIT = 10
-PASSWORD_RESET_VALIDATE_WINDOW_SECONDS = 15 * 60
 
 app = Flask(__name__, static_folder="assets", static_url_path="/assets")
 
@@ -60,10 +47,8 @@ bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
 tabelas_atualizacoes_cache = {}
 usuarios_cache = {}
-rate_limit_cache = {}
 
 _connection_lock = Lock()
-_rate_limit_lock = Lock()
 _pools = {}
 
 
@@ -1345,23 +1330,6 @@ def autenticar_usuario(nome_banco, usuario, senha):
 @app.errorhandler(MySQLdb.MySQLError)
 def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
-
-
-@app.route("/api/health", methods=["GET"])
-def api_health():
-    return responder_json({"ok": True, "status": "healthy"})
-
-
-@app.route("/", methods=["GET"])
-def servir_raiz():
-    return send_from_directory(BASE_DIR, "login.html")
-
-
-@app.route("/<path:arquivo>", methods=["GET"])
-def servir_paginas_estaticas(arquivo):
-    if arquivo in STATIC_PAGES:
-        return send_from_directory(BASE_DIR, arquivo)
-    return responder_json({"ok": False, "erro": "Recurso não encontrado."}, 404)
 
 
 @app.route("/api/projetos", methods=["GET"])
