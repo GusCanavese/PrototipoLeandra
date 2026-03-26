@@ -17,6 +17,8 @@ from threading import Lock
 from dotenv import load_dotenv
 load_dotenv()
 
+import pymysql
+pymysql.install_as_MySQLdb()
 import MySQLdb
 import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
