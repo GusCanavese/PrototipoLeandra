@@ -1153,7 +1153,6 @@ def salvar_chamado_individual(nome_banco, chamado):
                 LIMIT 1
                 """
             )
-            
             ultimo = cursor.fetchone()
             proximo_numero = 1
             if ultimo and ultimo[0]:
