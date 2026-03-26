@@ -1,4 +1,4 @@
-const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
+const API_BASE_URL = `${window.location.origin}/api`;
 const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const ID_INSTANCIA_ABA = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -27,7 +27,7 @@ let usuarioAutenticado = null;
 let promessaCarregamentoChamados = null;
 let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
-let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
+let bancoProjetoAtivo = (localStorage.getItem(CHAVE_STORAGE_BANCO) || "").trim();
 let estadoResetSenha = null;
 
 
@@ -81,6 +81,19 @@ function obterBancoProjetoAtual() {
 function definirBancoProjetoAtivo(nomeBanco) {
   bancoProjetoAtivo = (nomeBanco || "teste").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
+}
+
+async function sincronizarBancoPadrao() {
+  if (bancoProjetoAtivo) return bancoProjetoAtivo;
+  try {
+    const dados = await carregarProjetosDisponiveis();
+    const bancoPadrao = (dados?.padrao || "teste").trim();
+    definirBancoProjetoAtivo(bancoPadrao);
+    return bancoPadrao;
+  } catch {
+    bancoProjetoAtivo = "teste";
+    return bancoProjetoAtivo;
+  }
 }
 
 function obterLoginPreCadastro() {
@@ -2457,6 +2470,7 @@ async function inicializar() {
   configurarAlternadoresSenha();
   definirUsuarioAutenticadoSeSalvo();
   estadoResetSenha = obterEstadoResetSenhaSalvo();
+  await sincronizarBancoPadrao();
 
   const paginaDetalhes = document.getElementById("detalhes-chamado");
   const paginaListaTecnico = document.getElementById("table-chamados");

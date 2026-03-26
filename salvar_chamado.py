@@ -19,22 +19,34 @@ load_dotenv()
 
 import MySQLdb
 import MySQLdb.cursors
-from flask import Flask, jsonify, make_response, request
+from flask import Flask, jsonify, make_response, request, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-host     = "ballast.proxy.rlwy.net"
-user     = "root"
-password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-db       = "teste"
-port     =  15192
-nome_banco = "teste"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "assets")
+HTML_PUBLICOS = {
+    "admin.html",
+    "cadastro-cliente.html",
+    "cliente.html",
+    "create.html",
+    "details.html",
+    "index.html",
+    "login.html",
+}
+
+host = os.getenv("MYSQLHOST", "127.0.0.1")
+user = os.getenv("MYSQLUSER", "root")
+password = os.getenv("MYSQLPASSWORD", "")
+db = os.getenv("MYSQLDATABASE", os.getenv("DB_NAME", "teste"))
+port = int(os.getenv("MYSQLPORT", "3306"))
+nome_banco = db
 
 
 POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
 VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/assets")
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
@@ -212,7 +224,7 @@ def validar_banco_disponivel(nome_banco):
 
 
 def obter_banco_requisicao():
-    nome_banco = request.headers.get("X-Project-DB", "teste")
+    nome_banco = request.headers.get("X-Project-DB", db)
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
     try:
@@ -1329,11 +1341,24 @@ def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
 
 
+@app.route("/", methods=["GET"])
+def servir_index():
+    return send_from_directory(BASE_DIR, "index.html")
+
+
+@app.route("/<path:arquivo>", methods=["GET"])
+def servir_frontend(arquivo):
+    arquivo_normalizado = os.path.normpath(arquivo).replace("\\", "/")
+    if arquivo_normalizado in HTML_PUBLICOS:
+        return send_from_directory(BASE_DIR, arquivo_normalizado)
+    return responder_json({"ok": False, "erro": "Arquivo não encontrado."}, 404)
+
+
 @app.route("/api/projetos", methods=["GET"])
 async def api_projetos_listar():
     try:
         projetos = await executar_em_thread(listar_bancos_disponiveis)
-        return responder_json({"projetos": projetos, "padrao": "teste"})
+        return responder_json({"projetos": projetos, "padrao": db})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
@@ -1443,7 +1468,7 @@ async def api_login():
     senha = (dados.get("senha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or "teste"
+        nome_banco = dados.get("banco") or db
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
@@ -1481,7 +1506,7 @@ async def api_primeiro_acesso():
     nova_senha = (dados.get("novaSenha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or "teste"
+        nome_banco = dados.get("banco") or db
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
@@ -1576,4 +1601,5 @@ async def api_esqueci_senha_redefinir():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    porta_aplicacao = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=porta_aplicacao, debug=False)
