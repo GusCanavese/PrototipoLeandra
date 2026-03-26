@@ -15,8 +15,8 @@ from queue import Empty, Queue
 from threading import Lock
 
 
-import pymysql as MySQLdb
-import pymysql.cursors
+import MySQLdb
+import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -1574,6 +1574,5 @@ async def api_esqueci_senha_redefinir():
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
 
-if __name__ == "main":
-    porta = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=porta)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
