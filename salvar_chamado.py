@@ -15,8 +15,8 @@ from queue import Empty, Queue
 from threading import Lock
 
 
-import MySQLdb
-import MySQLdb.cursors
+import pymysql as MySQLdb
+import pymysql.cursors
 from flask import Flask, jsonify, make_response, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
