@@ -14,19 +14,21 @@ from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
 
+from dotenv import load_dotenv
+load_dotenv()
 
 import MySQLdb
 import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
+from flask import send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-host     = "ballast.proxy.rlwy.net"
-user     = "root"
-password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-db       = "teste"
-port     =  15192
-nome_banco = "teste"
-
+host       = os.getenv("DB_HOST", "ballast.proxy.rlwy.net")
+user       = os.getenv("DB_USER", "root")
+password   = os.getenv("DB_PASSWORD", "")
+db         = os.getenv("DB_NAME", "teste")
+port       = int(os.getenv("DB_PORT", 15192))
+nome_banco = db
 
 POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
@@ -170,6 +172,15 @@ def responder_preflight_options():
         return aplicar_headers_cors(make_response("", 200))
     return None
 
+@app.route("/")
+def home():
+    return send_from_directory(".", "login.html")
+
+@app.route("/<path:nome_arquivo>")
+def servir_arquivos(nome_arquivo):
+    if os.path.exists(nome_arquivo):
+        return send_from_directory(".", nome_arquivo)
+    return "Página não encontrada", 404
 
 @app.after_request
 def garantir_cors_global(resposta):
@@ -1572,6 +1583,10 @@ async def api_esqueci_senha_redefinir():
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
+@app.route("/api/health", methods=["GET"])
+def healthcheck():
+    return responder_json({"ok": True, "status": "healthy"})
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 5000))
