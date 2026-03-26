@@ -1,4 +1,9 @@
-const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
+const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+
+const API_BASE_URL = isLocalhost 
+  ? "http://localhost:5000/api" 
+  : "https://gestup.up.railway.app/api"; 
+
 const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const ID_INSTANCIA_ABA = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
