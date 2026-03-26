@@ -474,6 +474,21 @@ def normalizar_evento_financeiro(evento):
     }
 
 
+def atualizacao_financeira_placeholder(atualizacao):
+    if not isinstance(atualizacao, dict):
+        return False
+    mensagem = str(atualizacao.get("mensagem", "") or "").strip()
+    autor = str(atualizacao.get("autor", "") or "").strip()
+    anexos = normalizar_anexos(atualizacao.get("anexos"))
+    evento = normalizar_evento_financeiro(atualizacao.get("financeiro_evento"))
+    return (
+        autor == "Sistema"
+        and mensagem == "Registro financeiro inicial."
+        and not anexos
+        and evento is None
+    )
+
+
 def resolver_tabela_atualizacoes(conn):
     cursor = conn.cursor()
     try:
@@ -1056,6 +1071,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
     )
     financeiro_cliente = normalizar_financeiro(atualizacoes[0]["financeiro_cliente"]) if atualizacoes else []
     financeiro_escritorio = normalizar_financeiro(atualizacoes[0]["financeiro_escritorio"]) if atualizacoes else []
+    atualizacoes_exibiveis = [atu for atu in atualizacoes if not atualizacao_financeira_placeholder(atu)]
 
     return {
         "id": chamado["id_chamado"],
@@ -1081,7 +1097,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
                 "attachments": normalizar_anexos(atu["anexos"]),
                 "financialEvent": normalizar_evento_financeiro(atu.get("financeiro_evento")),
             }
-            for atu in atualizacoes
+            for atu in atualizacoes_exibiveis
         ],
     }
 
