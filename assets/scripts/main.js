@@ -227,6 +227,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
           headers: {
             "Content-Type": "application/json",
             ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtual() } : {}),
+            ...(usuarioAutenticado?.usuario ? { "X-Auth-User": usuarioAutenticado.usuario } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
@@ -1155,8 +1156,7 @@ function renderChamadosClienteAbertos() {
   if (!lista) return;
   lista.innerHTML = "";
 
-  const usuarioCliente = (usuarioAutenticado?.usuario || "").toLowerCase();
-  const chamadosCliente = chamados.filter((c) => (c.clienteLogin || "").toLowerCase() === usuarioCliente);
+  const chamadosCliente = chamados.filter((c) => usuarioPodeAcessarChamado(c));
   if (!chamadosCliente.length) {
     lista.innerHTML = '<div class="alert alert-info mb-0">Nenhum chamado encontrado.</div>';
     return;
@@ -1796,12 +1796,11 @@ function registrarFormularioCadastroCliente() {
 
 function usuarioPodeAcessarChamado(chamado) {
   if (!chamado) return false;
-  if (usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) return true;
-  if (usuarioAutenticado?.tipo !== "Cliente") return false;
-
-  const loginClienteChamado = (chamado.clienteLogin || "").toLowerCase();
-  const identificadorCliente = (usuarioAutenticado?.clienteId || usuarioAutenticado?.usuario || "").toLowerCase();
-  return loginClienteChamado === identificadorCliente;
+  const usuarioAtual = (usuarioAutenticado?.usuario || "").toLowerCase();
+  if (!usuarioAtual) return false;
+  const criador = (chamado.creatorLogin || "").toLowerCase();
+  const parceiro = (chamado.partnerLogin || "").toLowerCase();
+  return usuarioAtual === criador || usuarioAtual === parceiro;
 }
 
 async function carregarDetalhesChamado() {
