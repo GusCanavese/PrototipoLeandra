@@ -43,7 +43,6 @@ bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
 tabelas_atualizacoes_cache = {}
 usuarios_cache = {}
-chamados_cache = set()
 rate_limit_cache = {}
 
 _connection_lock = Lock()
@@ -158,7 +157,7 @@ def _executar_com_retry(nome_banco, operacao):
 
 def aplicar_headers_cors(resposta):
     resposta.headers["Access-Control-Allow-Origin"] = "*"
-    resposta.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB, X-Auth-User"
+    resposta.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
     resposta.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
     return resposta
 
@@ -234,16 +233,6 @@ def obter_banco_requisicao():
     except (MySQLdb.OperationalError, MySQLdb.ProgrammingError) as erro:
         raise ValueError(f"Banco '{nome_banco}' não encontrado.") from erro
     return nome_banco
-
-
-def obter_usuario_requisicao(nome_banco):
-    usuario = (request.headers.get("X-Auth-User") or "").strip()
-    if not usuario:
-        raise ValueError("Usuário autenticado não informado.")
-    registro = obter_usuario_por_login(nome_banco, usuario)
-    if not registro:
-        raise ValueError("Usuário autenticado inválido.")
-    return registro["usuario"]
 
 
 def normalizar_email(email):
@@ -677,75 +666,6 @@ def preparar_tabela_usuarios(nome_banco):
     usuarios_cache[nome_banco] = agora + timedelta(minutes=10)
 
 
-def _coluna_existe(conn, nome_tabela, nome_coluna):
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT DATABASE()")
-        banco_atual = cursor.fetchone()[0]
-        cursor.execute(
-            """
-            SELECT 1
-            FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = %s
-              AND TABLE_NAME = %s
-              AND COLUMN_NAME = %s
-            LIMIT 1
-            """,
-            (banco_atual, nome_tabela, nome_coluna),
-        )
-        return bool(cursor.fetchone())
-    finally:
-        cursor.close()
-
-
-def preparar_tabela_chamados(nome_banco):
-    if nome_banco in chamados_cache:
-        return
-
-    def operacao(conn):
-        cursor = conn.cursor()
-        try:
-            coluna_criador_existe = _coluna_existe(conn, "chamados", "criador_login")
-            coluna_parceiro_existe = _coluna_existe(conn, "chamados", "parceiro_login")
-            if not coluna_criador_existe:
-                cursor.execute("ALTER TABLE chamados ADD COLUMN criador_login VARCHAR(255) NULL")
-            if not coluna_parceiro_existe:
-                cursor.execute("ALTER TABLE chamados ADD COLUMN parceiro_login VARCHAR(255) NULL")
-            if not coluna_criador_existe:
-                cursor.execute(
-                    """
-                    UPDATE chamados
-                    SET criador_login = login_cliente
-                    WHERE (criador_login IS NULL OR criador_login = '')
-                      AND login_cliente IS NOT NULL
-                      AND login_cliente <> ''
-                    """
-                )
-        finally:
-            cursor.close()
-
-    _executar_com_retry(nome_banco, operacao)
-    chamados_cache.add(nome_banco)
-
-
-def obter_usuario_por_login(nome_banco, login):
-    preparar_tabela_usuarios(nome_banco)
-    login_normalizado = (login or "").strip().lower()
-    if not login_normalizado:
-        return None
-    return executar_select(
-        nome_banco,
-        """
-        SELECT usuario, tipo
-        FROM usuarios
-        WHERE LOWER(usuario) = %s
-        LIMIT 1
-        """,
-        (login_normalizado,),
-        fetch_one=True,
-    )
-
-
 def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     if valor is None or valor == "":
         return padrao
@@ -1097,20 +1017,16 @@ def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
     return {"ok": True}
 
 
-def listar_chamados(nome_banco, usuario_logado, limite=50, offset=0):
-    preparar_tabela_chamados(nome_banco)
+def listar_chamados(nome_banco, limite=50, offset=0):
     chamados = executar_select(
         nome_banco,
         """
-        SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao,
-               criador_login, parceiro_login
+        SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao
         FROM chamados
-        WHERE LOWER(COALESCE(criador_login, '')) = %s
-           OR LOWER(COALESCE(parceiro_login, '')) = %s
         ORDER BY ultima_atualizacao DESC, id_chamado DESC
         LIMIT %s OFFSET %s
         """,
-        (usuario_logado.lower(), usuario_logado.lower(), limite, offset),
+        (limite, offset),
     )
     return [
         {
@@ -1122,30 +1038,22 @@ def listar_chamados(nome_banco, usuario_logado, limite=50, offset=0):
             "status": c["status"],
             "openedAt": c["abertura"] or "",
             "lastUpdate": c["ultima_atualizacao"] or "",
-            "creatorLogin": c.get("criador_login") or "",
-            "partnerLogin": c.get("parceiro_login") or "",
         }
         for c in chamados
     ]
 
 
-def obter_chamado_detalhe(nome_banco, id_chamado, usuario_logado):
-    preparar_tabela_chamados(nome_banco)
+def obter_chamado_detalhe(nome_banco, id_chamado):
     tabela_atualizacoes = preparar_tabela_atualizacoes(nome_banco)
     chamado = executar_select(
         nome_banco,
         """
         SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao,
-               criador_login, parceiro_login
+               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
         FROM chamados
         WHERE id_chamado = %s
-          AND (
-            LOWER(COALESCE(criador_login, '')) = %s
-            OR LOWER(COALESCE(parceiro_login, '')) = %s
-          )
         """,
-        (id_chamado, usuario_logado.lower(), usuario_logado.lower()),
+        (id_chamado,),
         fetch_one=True,
     )
     if not chamado:
@@ -1179,8 +1087,6 @@ def obter_chamado_detalhe(nome_banco, id_chamado, usuario_logado):
         "partnershipWith": chamado["parceria_com"] or "",
         "openedAt": chamado["abertura"] or "",
         "lastUpdate": chamado["ultima_atualizacao"] or "",
-        "creatorLogin": chamado.get("criador_login") or "",
-        "partnerLogin": chamado.get("parceiro_login") or "",
         "financialClient": financeiro_cliente,
         "financialOffice": financeiro_escritorio,
         "updates": [
@@ -1196,37 +1102,22 @@ def obter_chamado_detalhe(nome_banco, id_chamado, usuario_logado):
     }
 
 
-def substituir_chamados(nome_banco, chamados, usuario_logado):
-    preparar_tabela_chamados(nome_banco)
+def substituir_chamados(nome_banco, chamados):
     def transacao(conn):
         cursor = conn.cursor()
         tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
         cursor.execute(f"DELETE FROM {tabela_atualizacoes}")
-        cursor.execute(
-            """
-            DELETE FROM chamados
-            WHERE LOWER(COALESCE(criador_login, '')) = %s
-               OR LOWER(COALESCE(parceiro_login, '')) = %s
-            """,
-            (usuario_logado.lower(), usuario_logado.lower()),
-        )
+        cursor.execute("DELETE FROM chamados")
 
         for chamado in chamados:
-            parceiro_login = ""
-            parceiro_informado = (chamado.get("partnershipWith") or "").strip()
-            if chamado.get("hasPartnership") and parceiro_informado:
-                parceiro = obter_usuario_por_login(nome_banco, parceiro_informado)
-                if parceiro:
-                    parceiro_login = parceiro["usuario"]
             financeiro_cliente = json.dumps(normalizar_financeiro(chamado.get("financialClient", [])), ensure_ascii=False)
             financeiro_escritorio = json.dumps(normalizar_financeiro(chamado.get("financialOffice", [])), ensure_ascii=False)
             cursor.execute(
                 """
                 INSERT INTO chamados (
                     id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao,
-                    criador_login, parceiro_login
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chamado["id"],
@@ -1237,13 +1128,11 @@ def substituir_chamados(nome_banco, chamados, usuario_logado):
                     chamado["priority"],
                     chamado["status"],
                     chamado["processNumber"],
-                    1 if parceiro_login else 0,
+                    1 if chamado.get("hasPartnership") else 0,
                     chamado.get("partnershipPercent", ""),
-                    parceiro_login,
+                    chamado.get("partnershipWith", ""),
                     chamado["openedAt"],
                     chamado["lastUpdate"],
-                    usuario_logado,
-                    parceiro_login or None,
                 ),
             )
 
@@ -1273,8 +1162,7 @@ def substituir_chamados(nome_banco, chamados, usuario_logado):
     executar_transacao(nome_banco, transacao)
 
 
-def salvar_chamado_individual(nome_banco, chamado, usuario_logado):
-    preparar_tabela_chamados(nome_banco)
+def salvar_chamado_individual(nome_banco, chamado):
     chamado_normalizado = dict(chamado or {})
     chamado_normalizado["financialClient"] = normalizar_financeiro(chamado_normalizado.get("financialClient", []))
     chamado_normalizado["financialOffice"] = normalizar_financeiro(chamado_normalizado.get("financialOffice", []))
@@ -1284,7 +1172,6 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_logado):
         tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
 
         id_chamado = (chamado_normalizado.get("id") or "").strip()
-        criador_login = usuario_logado
         if not id_chamado:
             cursor.execute(
                 """
@@ -1304,39 +1191,13 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_logado):
                     proximo_numero = 1
             id_chamado = f"C-{proximo_numero}"
             chamado_normalizado["id"] = id_chamado
-        else:
-            cursor.execute(
-                """
-                SELECT criador_login, parceiro_login
-                FROM chamados
-                WHERE id_chamado = %s
-                LIMIT 1
-                """,
-                (id_chamado,),
-            )
-            registro_existente = cursor.fetchone()
-            if registro_existente:
-                criador_existente = (registro_existente[0] or "").strip()
-                parceiro_existente = (registro_existente[1] or "").strip().lower()
-                if usuario_logado.lower() not in {criador_existente.lower(), parceiro_existente}:
-                    raise ValueError("Você não tem permissão para alterar este chamado.")
-                if criador_existente:
-                    criador_login = criador_existente
-
-        parceiro_login = ""
-        parceiro_informado = (chamado_normalizado.get("partnershipWith") or "").strip()
-        if chamado_normalizado.get("hasPartnership") and parceiro_informado:
-            parceiro = obter_usuario_por_login(nome_banco, parceiro_informado)
-            if parceiro:
-                parceiro_login = parceiro["usuario"]
 
         cursor.execute(
             """
             INSERT INTO chamados (
                 id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao,
-                criador_login, parceiro_login
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 cliente = VALUES(cliente),
                 login_cliente = VALUES(login_cliente),
@@ -1349,9 +1210,7 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_logado):
                 parceria_porcentagem = VALUES(parceria_porcentagem),
                 parceria_com = VALUES(parceria_com),
                 abertura = VALUES(abertura),
-                ultima_atualizacao = VALUES(ultima_atualizacao),
-                criador_login = VALUES(criador_login),
-                parceiro_login = VALUES(parceiro_login)
+                ultima_atualizacao = VALUES(ultima_atualizacao)
             """,
             (
                 chamado_normalizado["id"],
@@ -1362,13 +1221,11 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_logado):
                 chamado_normalizado["priority"],
                 chamado_normalizado["status"],
                 chamado_normalizado["processNumber"],
-                1 if parceiro_login else 0,
+                1 if chamado_normalizado.get("hasPartnership") else 0,
                 chamado_normalizado.get("partnershipPercent", ""),
-                parceiro_login,
+                chamado_normalizado.get("partnershipWith", ""),
                 chamado_normalizado["openedAt"],
                 chamado_normalizado["lastUpdate"],
-                criador_login,
-                parceiro_login or None,
             ),
         )
 
@@ -1463,20 +1320,8 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_logado):
     return chamado_normalizado
 
 
-def excluir_chamado(nome_banco, id_chamado, usuario_logado):
-    preparar_tabela_chamados(nome_banco)
-    executar_write(
-        nome_banco,
-        """
-        DELETE FROM chamados
-        WHERE id_chamado = %s
-          AND (
-            LOWER(COALESCE(criador_login, '')) = %s
-            OR LOWER(COALESCE(parceiro_login, '')) = %s
-          )
-        """,
-        (id_chamado, usuario_logado.lower(), usuario_logado.lower()),
-    )
+def excluir_chamado(nome_banco, id_chamado):
+    executar_write(nome_banco, "DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
 
 
 def autenticar_usuario(nome_banco, usuario, senha):
@@ -1555,10 +1400,9 @@ async def api_cliente_inserir():
 async def api_chamados_listar():
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_logado = obter_usuario_requisicao(nome_banco)
         limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
-        chamados = await executar_em_thread(listar_chamados, nome_banco, usuario_logado, limite, offset)
+        chamados = await executar_em_thread(listar_chamados, nome_banco, limite, offset)
         return responder_json(chamados)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
@@ -1568,8 +1412,7 @@ async def api_chamados_listar():
 async def api_chamado_detalhar(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_logado = obter_usuario_requisicao(nome_banco)
-        chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado, usuario_logado)
+        chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado)
         if not chamado:
             return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
         return responder_json(chamado)
@@ -1581,8 +1424,7 @@ async def api_chamado_detalhar(id_chamado):
 async def api_chamados_substituir():
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_logado = obter_usuario_requisicao(nome_banco)
-        await executar_em_thread(substituir_chamados, nome_banco, request.json or [], usuario_logado)
+        await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
@@ -1592,8 +1434,7 @@ async def api_chamados_substituir():
 async def api_chamado_inserir():
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_logado = obter_usuario_requisicao(nome_banco)
-        chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {}, usuario_logado)
+        chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {})
         return responder_json({"ok": True, "chamado": chamado_salvo}, 201)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
@@ -1603,11 +1444,10 @@ async def api_chamado_inserir():
 async def api_chamado_atualizar(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_logado = obter_usuario_requisicao(nome_banco)
         chamado = request.json or {}
         if not chamado.get("id"):
             chamado["id"] = id_chamado
-        await executar_em_thread(salvar_chamado_individual, nome_banco, chamado, usuario_logado)
+        await executar_em_thread(salvar_chamado_individual, nome_banco, chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
@@ -1617,8 +1457,7 @@ async def api_chamado_atualizar(id_chamado):
 async def api_chamado_remover(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_logado = obter_usuario_requisicao(nome_banco)
-        await executar_em_thread(excluir_chamado, nome_banco, id_chamado, usuario_logado)
+        await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)

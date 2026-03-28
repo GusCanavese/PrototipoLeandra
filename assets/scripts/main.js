@@ -227,7 +227,6 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
           headers: {
             "Content-Type": "application/json",
             ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtual() } : {}),
-            ...(usuarioAutenticado?.usuario ? { "X-Auth-User": usuarioAutenticado.usuario } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
@@ -285,9 +284,6 @@ function lerCacheChamados() {
     if (!bruto) return null;
     const cache = JSON.parse(bruto);
     if (!cache?.timestamp || !Array.isArray(cache?.dados)) return null;
-    const usuarioCache = (cache?.usuario || "").toLowerCase();
-    const usuarioAtual = (usuarioAutenticado?.usuario || "").toLowerCase();
-    if (!usuarioCache || !usuarioAtual || usuarioCache !== usuarioAtual) return null;
     return cache;
   } catch {
     return null;
@@ -362,7 +358,6 @@ function escreverCacheSessao(chave, dados) {
   sessionStorage.setItem(chave, JSON.stringify({
     timestamp: Date.now(),
     banco: obterBancoProjetoAtual(),
-    usuario: (usuarioAutenticado?.usuario || "").toLowerCase(),
     dados,
   }));
 }
@@ -1052,20 +1047,12 @@ function obterUsuarioSalvo() {
 }
 
 function salvarUsuarioAutenticado(usuario) {
-  const usuarioAnterior = (usuarioAutenticado?.usuario || "").toLowerCase();
   usuarioAutenticado = { ...usuario, tipo: normalizarTipoUsuario(usuario?.tipo) };
-  const usuarioAtual = (usuarioAutenticado?.usuario || "").toLowerCase();
-  if (usuarioAnterior && usuarioAnterior !== usuarioAtual) {
-    invalidarCacheChamados();
-    invalidarCacheClientes();
-  }
   localStorage.setItem(CHAVE_STORAGE_LOGIN, JSON.stringify(usuarioAutenticado));
 }
 
 function limparAutenticacao() {
   usuarioAutenticado = null;
-  invalidarCacheChamados();
-  invalidarCacheClientes();
   localStorage.removeItem(CHAVE_STORAGE_LOGIN);
   localStorage.removeItem(CHAVE_STORAGE_ATIVIDADE_USUARIO);
   sessionStorage.removeItem(CHAVE_STORAGE_SENHA_TEMPORARIA);
@@ -1168,7 +1155,8 @@ function renderChamadosClienteAbertos() {
   if (!lista) return;
   lista.innerHTML = "";
 
-  const chamadosCliente = chamados.filter((c) => usuarioPodeAcessarChamado(c));
+  const usuarioCliente = (usuarioAutenticado?.usuario || "").toLowerCase();
+  const chamadosCliente = chamados.filter((c) => (c.clienteLogin || "").toLowerCase() === usuarioCliente);
   if (!chamadosCliente.length) {
     lista.innerHTML = '<div class="alert alert-info mb-0">Nenhum chamado encontrado.</div>';
     return;
@@ -1808,11 +1796,12 @@ function registrarFormularioCadastroCliente() {
 
 function usuarioPodeAcessarChamado(chamado) {
   if (!chamado) return false;
-  const usuarioAtual = (usuarioAutenticado?.usuario || "").toLowerCase();
-  if (!usuarioAtual) return false;
-  const criador = (chamado.creatorLogin || "").toLowerCase();
-  const parceiro = (chamado.partnerLogin || "").toLowerCase();
-  return usuarioAtual === criador || usuarioAtual === parceiro;
+  if (usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) return true;
+  if (usuarioAutenticado?.tipo !== "Cliente") return false;
+
+  const loginClienteChamado = (chamado.clienteLogin || "").toLowerCase();
+  const identificadorCliente = (usuarioAutenticado?.clienteId || usuarioAutenticado?.usuario || "").toLowerCase();
+  return loginClienteChamado === identificadorCliente;
 }
 
 async function carregarDetalhesChamado() {
@@ -2467,6 +2456,20 @@ async function inicializar() {
 
   await configurarTelaLoginV2();
 
+  const carregamentosIniciais = [];
+
+  if (paginaListaTecnico || paginaCliente) carregamentosIniciais.push(carregarChamadosSalvos());
+  if (paginaCriacao || paginaCadastroCliente) carregamentosIniciais.push(carregarClientesSalvos());
+
+  if (carregamentosIniciais.length) {
+    try {
+      await Promise.all(carregamentosIniciais);
+    } catch {
+      alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtual()}'. Verifique o backend Python.`);
+      return;
+    }
+  }
+
   if (usuarioAutenticado && sessaoExpiradaPorInatividade()) {
     encerrarSessaoPorInatividade();
     return;
@@ -2503,18 +2506,6 @@ async function inicializar() {
   if (paginaCadastroCliente && !usuarioPodeCadastrarUsuarios()) {
     window.location.href = "cliente.html";
     return;
-  }
-
-  const carregamentosIniciais = [];
-  if (paginaListaTecnico || paginaCliente || paginaDetalhes) carregamentosIniciais.push(carregarChamadosSalvos());
-  if (paginaCriacao || paginaCadastroCliente) carregamentosIniciais.push(carregarClientesSalvos());
-  if (carregamentosIniciais.length) {
-    try {
-      await Promise.all(carregamentosIniciais);
-    } catch {
-      alert(`Não foi possível carregar dados do banco '${obterBancoProjetoAtual()}'. Verifique o backend Python.`);
-      return;
-    }
   }
 
   if (paginaListaTecnico) {
