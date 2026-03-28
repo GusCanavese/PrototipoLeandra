@@ -43,6 +43,7 @@ bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
 tabelas_atualizacoes_cache = {}
 usuarios_cache = {}
+chamados_cache = set()
 rate_limit_cache = {}
 
 _connection_lock = Lock()
@@ -698,26 +699,33 @@ def _coluna_existe(conn, nome_tabela, nome_coluna):
 
 
 def preparar_tabela_chamados(nome_banco):
+    if nome_banco in chamados_cache:
+        return
+
     def operacao(conn):
         cursor = conn.cursor()
         try:
-            if not _coluna_existe(conn, "chamados", "criador_login"):
+            coluna_criador_existe = _coluna_existe(conn, "chamados", "criador_login")
+            coluna_parceiro_existe = _coluna_existe(conn, "chamados", "parceiro_login")
+            if not coluna_criador_existe:
                 cursor.execute("ALTER TABLE chamados ADD COLUMN criador_login VARCHAR(255) NULL")
-            if not _coluna_existe(conn, "chamados", "parceiro_login"):
+            if not coluna_parceiro_existe:
                 cursor.execute("ALTER TABLE chamados ADD COLUMN parceiro_login VARCHAR(255) NULL")
-            cursor.execute(
-                """
-                UPDATE chamados
-                SET criador_login = login_cliente
-                WHERE (criador_login IS NULL OR criador_login = '')
-                  AND login_cliente IS NOT NULL
-                  AND login_cliente <> ''
-                """
-            )
+            if not coluna_criador_existe:
+                cursor.execute(
+                    """
+                    UPDATE chamados
+                    SET criador_login = login_cliente
+                    WHERE (criador_login IS NULL OR criador_login = '')
+                      AND login_cliente IS NOT NULL
+                      AND login_cliente <> ''
+                    """
+                )
         finally:
             cursor.close()
 
     _executar_com_retry(nome_banco, operacao)
+    chamados_cache.add(nome_banco)
 
 
 def obter_usuario_por_login(nome_banco, login):
