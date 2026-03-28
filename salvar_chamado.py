@@ -718,6 +718,35 @@ def obter_usuario_autenticado_requisicao():
     return usuario
 
 
+def obter_contexto_usuario_requisicao(nome_banco):
+    usuario = obter_usuario_autenticado_requisicao()
+    preparar_tabela_usuarios(nome_banco)
+    registro = executar_select(
+        nome_banco,
+        """
+        SELECT usuario, tipo
+        FROM usuarios
+        WHERE LOWER(usuario) = %s
+        LIMIT 1
+        """,
+        (usuario,),
+        fetch_one=True,
+    )
+    if not registro:
+        raise ValueError("Usuário autenticado não encontrado.")
+    return {
+        "login": usuario,
+        "tipo": normalizar_tipo_usuario(registro.get("tipo") or ""),
+    }
+
+
+def normalizar_tipo_usuario(tipo):
+    tipo_limpo = (tipo or "").strip()
+    if tipo_limpo == "Técnico":
+        return "Advogado"
+    return tipo_limpo
+
+
 def parceiro_valido(nome_banco, parceiro_login):
     parceiro = normalizar_usuario_login(parceiro_login)
     if not parceiro:
@@ -1088,20 +1117,33 @@ def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
     return {"ok": True}
 
 
-def listar_chamados(nome_banco, usuario_login, limite=50, offset=0):
+def listar_chamados(nome_banco, usuario_login, tipo_usuario, limite=50, offset=0):
     preparar_tabela_chamados(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
-    chamados = executar_select(
-        nome_banco,
-        """
+    filtro_cliente = normalizar_tipo_usuario(tipo_usuario) == "Cliente"
+    sql = """
         SELECT id_chamado, cliente, login_cliente, resumo, prioridade, status, abertura, ultima_atualizacao
         FROM chamados
+    """
+    params = []
+    if filtro_cliente:
+        sql += " WHERE LOWER(login_cliente) = %s"
+        params.append(usuario)
+    else:
+        sql += """
         WHERE LOWER(usuario_criador) = %s
            OR LOWER(parceria_com) = %s
+        """
+        params.extend([usuario, usuario])
+    sql += """
         ORDER BY ultima_atualizacao DESC, id_chamado DESC
         LIMIT %s OFFSET %s
-        """,
-        (usuario, usuario, limite, offset),
+    """
+    params.extend([limite, offset])
+    chamados = executar_select(
+        nome_banco,
+        sql,
+        tuple(params),
     )
     return [
         {
@@ -1118,20 +1160,28 @@ def listar_chamados(nome_banco, usuario_login, limite=50, offset=0):
     ]
 
 
-def obter_chamado_detalhe(nome_banco, id_chamado, usuario_login):
+def obter_chamado_detalhe(nome_banco, id_chamado, usuario_login, tipo_usuario):
     tabela_atualizacoes = preparar_tabela_atualizacoes(nome_banco)
     preparar_tabela_chamados(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
-    chamado = executar_select(
-        nome_banco,
-        """
+    filtro_cliente = normalizar_tipo_usuario(tipo_usuario) == "Cliente"
+    sql = """
         SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, usuario_criador
         FROM chamados
         WHERE id_chamado = %s
-          AND (LOWER(usuario_criador) = %s OR LOWER(parceria_com) = %s)
-        """,
-        (id_chamado, usuario, usuario),
+    """
+    params = [id_chamado]
+    if filtro_cliente:
+        sql += " AND LOWER(login_cliente) = %s"
+        params.append(usuario)
+    else:
+        sql += " AND (LOWER(usuario_criador) = %s OR LOWER(parceria_com) = %s)"
+        params.extend([usuario, usuario])
+    chamado = executar_select(
+        nome_banco,
+        sql,
+        tuple(params),
         fetch_one=True,
     )
     if not chamado:
@@ -1491,10 +1541,17 @@ async def api_cliente_inserir():
 async def api_chamados_listar():
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_requisicao = obter_usuario_autenticado_requisicao()
+        contexto_usuario = await executar_em_thread(obter_contexto_usuario_requisicao, nome_banco)
         limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
-        chamados = await executar_em_thread(listar_chamados, nome_banco, usuario_requisicao, limite, offset)
+        chamados = await executar_em_thread(
+            listar_chamados,
+            nome_banco,
+            contexto_usuario["login"],
+            contexto_usuario["tipo"],
+            limite,
+            offset,
+        )
         return responder_json(chamados)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
@@ -1504,8 +1561,14 @@ async def api_chamados_listar():
 async def api_chamado_detalhar(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
-        usuario_requisicao = obter_usuario_autenticado_requisicao()
-        chamado = await executar_em_thread(obter_chamado_detalhe, nome_banco, id_chamado, usuario_requisicao)
+        contexto_usuario = await executar_em_thread(obter_contexto_usuario_requisicao, nome_banco)
+        chamado = await executar_em_thread(
+            obter_chamado_detalhe,
+            nome_banco,
+            id_chamado,
+            contexto_usuario["login"],
+            contexto_usuario["tipo"],
+        )
         if not chamado:
             return responder_json({"ok": False, "erro": "Chamado não encontrado."}, 404)
         return responder_json(chamado)
