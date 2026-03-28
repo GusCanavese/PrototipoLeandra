@@ -78,6 +78,17 @@ function obterBancoProjetoAtual() {
   return (bancoProjetoAtivo || "teste").trim() || "teste";
 }
 
+function obterUsuarioCabecalhoRequisicao() {
+  const usuarioAtual = (usuarioAutenticado?.usuario || "").trim();
+  if (usuarioAtual) return usuarioAtual;
+  try {
+    const salvo = JSON.parse(localStorage.getItem(CHAVE_STORAGE_LOGIN) || "null");
+    return (salvo?.usuario || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
 function definirBancoProjetoAtivo(nomeBanco) {
   bancoProjetoAtivo = (nomeBanco || "teste").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
@@ -217,6 +228,7 @@ function escaparHtml(valor) {
 
 async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
   const incluirBancoNoHeader = opcoesInternas.incluirBancoNoHeader !== false;
+  const usuarioCabecalho = obterUsuarioCabecalhoRequisicao();
 
   const tentarComBase = async (baseUrl) => {
     for (let tentativa = 0; tentativa <= RETRY_BACKOFF_MS.length; tentativa += 1) {
@@ -227,6 +239,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
           headers: {
             "Content-Type": "application/json",
             ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtual() } : {}),
+            ...(usuarioCabecalho ? { "X-Auth-User": usuarioCabecalho } : {}),
             ...(opcoes.headers || {}),
           },
           ...opcoes,
