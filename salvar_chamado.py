@@ -44,6 +44,7 @@ validacao_bancos_cache = {}
 tabelas_atualizacoes_cache = {}
 usuarios_cache = {}
 chamados_cache = {}
+agenda_cache = {}
 rate_limit_cache = {}
 
 _connection_lock = Lock()
@@ -704,6 +705,203 @@ def preparar_tabela_chamados(nome_banco):
 
     _executar_com_retry(nome_banco, operacao)
     chamados_cache[nome_banco] = agora + timedelta(minutes=10)
+
+
+def preparar_tabela_agenda(nome_banco):
+    agora = datetime.now()
+    cache = agenda_cache.get(nome_banco)
+    if cache and agora < cache:
+        return
+
+    def operacao(conn):
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agenda_compromissos (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                usuario_login VARCHAR(255) NOT NULL,
+                titulo VARCHAR(255) NOT NULL,
+                dia DATE NOT NULL,
+                hora_inicio TIME NOT NULL,
+                duracao_minutos INT NOT NULL,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_agenda_usuario_dia (usuario_login, dia)
+            )
+            """
+        )
+        cursor.close()
+
+    _executar_com_retry(nome_banco, operacao)
+    agenda_cache[nome_banco] = agora + timedelta(minutes=10)
+
+
+def validar_compromisso_agenda(compromisso):
+    titulo = (compromisso.get("titulo") or "").strip()
+    dia = (compromisso.get("dia") or "").strip()
+    hora_inicio = (compromisso.get("hora_inicio") or "").strip()
+    duracao = compromisso.get("duracao_minutos")
+
+    if not titulo:
+        raise ValueError("Título é obrigatório.")
+    if not dia:
+        raise ValueError("Dia é obrigatório.")
+    if not hora_inicio:
+        raise ValueError("Hora de início é obrigatória.")
+    if duracao in (None, ""):
+        raise ValueError("Duração é obrigatória.")
+
+    try:
+        datetime.strptime(dia, "%Y-%m-%d")
+    except ValueError as erro:
+        raise ValueError("Dia inválido. Use o formato YYYY-MM-DD.") from erro
+
+    try:
+        datetime.strptime(hora_inicio, "%H:%M")
+    except ValueError as erro:
+        raise ValueError("Hora de início inválida. Use o formato HH:MM.") from erro
+
+    try:
+        duracao_minutos = int(duracao)
+    except (TypeError, ValueError) as erro:
+        raise ValueError("Duração inválida.") from erro
+    if duracao_minutos <= 0 or duracao_minutos % 30 != 0:
+        raise ValueError("A duração deve ser em blocos de 30 minutos.")
+
+    return {
+        "titulo": titulo,
+        "dia": dia,
+        "hora_inicio": hora_inicio,
+        "duracao_minutos": duracao_minutos,
+    }
+
+
+def listar_compromissos_semana(nome_banco, usuario_login, inicio_semana, fim_semana):
+    preparar_tabela_agenda(nome_banco)
+    usuario = normalizar_usuario_login(usuario_login)
+    compromissos = executar_select(
+        nome_banco,
+        """
+        SELECT id, titulo, DATE_FORMAT(dia, '%%Y-%%m-%%d') AS dia,
+               DATE_FORMAT(hora_inicio, '%%H:%%i') AS hora_inicio, duracao_minutos
+        FROM agenda_compromissos
+        WHERE LOWER(usuario_login) = %s
+          AND dia BETWEEN %s AND %s
+        ORDER BY dia, hora_inicio
+        """,
+        (usuario, inicio_semana, fim_semana),
+    )
+    return compromissos
+
+
+def inserir_compromisso_agenda(nome_banco, usuario_login, dados):
+    preparar_tabela_agenda(nome_banco)
+    usuario = normalizar_usuario_login(usuario_login)
+    compromisso = validar_compromisso_agenda(dados or {})
+
+    def operacao(conn):
+        cursor = conn.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute(
+            """
+            INSERT INTO agenda_compromissos (usuario_login, titulo, dia, hora_inicio, duracao_minutos)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                usuario,
+                compromisso["titulo"],
+                compromisso["dia"],
+                compromisso["hora_inicio"],
+                compromisso["duracao_minutos"],
+            ),
+        )
+        compromisso_id = cursor.lastrowid
+        cursor.execute(
+            """
+            SELECT id, titulo, DATE_FORMAT(dia, '%%Y-%%m-%%d') AS dia,
+                   DATE_FORMAT(hora_inicio, '%%H:%%i') AS hora_inicio, duracao_minutos
+            FROM agenda_compromissos
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (compromisso_id,),
+        )
+        resultado = cursor.fetchone()
+        cursor.close()
+        conn.commit()
+        return resultado
+
+    return _executar_com_retry(nome_banco, operacao)
+
+
+def atualizar_compromisso_agenda(nome_banco, usuario_login, compromisso_id, dados):
+    preparar_tabela_agenda(nome_banco)
+    usuario = normalizar_usuario_login(usuario_login)
+    compromisso = validar_compromisso_agenda(dados or {})
+
+    def operacao(conn):
+        cursor = conn.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute(
+            """
+            UPDATE agenda_compromissos
+            SET titulo = %s,
+                dia = %s,
+                hora_inicio = %s,
+                duracao_minutos = %s
+            WHERE id = %s
+              AND LOWER(usuario_login) = %s
+            """,
+            (
+                compromisso["titulo"],
+                compromisso["dia"],
+                compromisso["hora_inicio"],
+                compromisso["duracao_minutos"],
+                compromisso_id,
+                usuario,
+            ),
+        )
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.commit()
+            return None
+        cursor.execute(
+            """
+            SELECT id, titulo, DATE_FORMAT(dia, '%%Y-%%m-%%d') AS dia,
+                   DATE_FORMAT(hora_inicio, '%%H:%%i') AS hora_inicio, duracao_minutos
+            FROM agenda_compromissos
+            WHERE id = %s
+              AND LOWER(usuario_login) = %s
+            LIMIT 1
+            """,
+            (compromisso_id, usuario),
+        )
+        resultado = cursor.fetchone()
+        cursor.close()
+        conn.commit()
+        return resultado
+
+    return _executar_com_retry(nome_banco, operacao)
+
+
+def excluir_compromisso_agenda(nome_banco, usuario_login, compromisso_id):
+    preparar_tabela_agenda(nome_banco)
+    usuario = normalizar_usuario_login(usuario_login)
+
+    def operacao(conn):
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM agenda_compromissos
+            WHERE id = %s
+              AND LOWER(usuario_login) = %s
+            """,
+            (compromisso_id, usuario),
+        )
+        removidos = cursor.rowcount
+        cursor.close()
+        conn.commit()
+        return removidos
+
+    return _executar_com_retry(nome_banco, operacao)
 
 
 def normalizar_usuario_login(valor):
@@ -1616,6 +1814,89 @@ async def api_chamado_remover(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
         await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
+        return responder_json({"ok": True})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/agenda/compromissos", methods=["GET"])
+async def api_agenda_listar():
+    try:
+        nome_banco = obter_banco_requisicao()
+        usuario_requisicao = obter_usuario_autenticado_requisicao()
+        inicio_semana = (request.args.get("inicio_semana") or "").strip()
+        if not inicio_semana:
+            raise ValueError("Parâmetro inicio_semana é obrigatório.")
+        data_inicio = datetime.strptime(inicio_semana, "%Y-%m-%d").date()
+        data_fim = data_inicio + timedelta(days=6)
+        compromissos = await executar_em_thread(
+            listar_compromissos_semana,
+            nome_banco,
+            usuario_requisicao,
+            data_inicio.strftime("%Y-%m-%d"),
+            data_fim.strftime("%Y-%m-%d"),
+        )
+        return responder_json(
+            {
+                "inicioSemana": data_inicio.strftime("%Y-%m-%d"),
+                "fimSemana": data_fim.strftime("%Y-%m-%d"),
+                "compromissos": compromissos,
+            }
+        )
+    except ValueError as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+    except RuntimeError as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 500)
+
+
+@app.route("/api/agenda/compromissos", methods=["POST"])
+async def api_agenda_criar():
+    try:
+        nome_banco = obter_banco_requisicao()
+        usuario_requisicao = obter_usuario_autenticado_requisicao()
+        compromisso = await executar_em_thread(
+            inserir_compromisso_agenda,
+            nome_banco,
+            usuario_requisicao,
+            request.json or {},
+        )
+        return responder_json({"ok": True, "compromisso": compromisso}, 201)
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/agenda/compromissos/<int:compromisso_id>", methods=["PUT"])
+async def api_agenda_atualizar(compromisso_id):
+    try:
+        nome_banco = obter_banco_requisicao()
+        usuario_requisicao = obter_usuario_autenticado_requisicao()
+        compromisso = await executar_em_thread(
+            atualizar_compromisso_agenda,
+            nome_banco,
+            usuario_requisicao,
+            compromisso_id,
+            request.json or {},
+        )
+        if not compromisso:
+            return responder_json({"ok": False, "erro": "Compromisso não encontrado."}, 404)
+        return responder_json({"ok": True, "compromisso": compromisso})
+    except (ValueError, RuntimeError) as erro:
+        return responder_json({"ok": False, "erro": str(erro)}, 400)
+
+
+@app.route("/api/agenda/compromissos/<int:compromisso_id>", methods=["DELETE"])
+async def api_agenda_excluir(compromisso_id):
+    try:
+        nome_banco = obter_banco_requisicao()
+        usuario_requisicao = obter_usuario_autenticado_requisicao()
+        removidos = await executar_em_thread(
+            excluir_compromisso_agenda,
+            nome_banco,
+            usuario_requisicao,
+            compromisso_id,
+        )
+        if removidos == 0:
+            return responder_json({"ok": False, "erro": "Compromisso não encontrado."}, 404)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)

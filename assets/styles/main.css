@@ -240,3 +240,77 @@ footer {
   background-color: #eef2f7;
   color: #52606d;
 }
+
+.agenda-wrapper {
+  overflow-x: auto;
+}
+
+.agenda-semanal {
+  min-width: 980px;
+}
+
+.agenda-cabecalho {
+  display: grid;
+  grid-template-columns: 80px repeat(7, minmax(110px, 1fr));
+  border-bottom: 1px solid #dee2e6;
+}
+
+.agenda-cabecalho-item {
+  padding: 0.5rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #6c757d;
+}
+
+.agenda-cabecalho-item strong {
+  color: #212529;
+  font-size: 0.95rem;
+}
+
+.agenda-corpo {
+  display: grid;
+  grid-template-columns: 80px repeat(7, minmax(110px, 1fr));
+  position: relative;
+}
+
+.agenda-coluna-horarios {
+  border-right: 1px solid #dee2e6;
+}
+
+.agenda-slot-hora {
+  height: 36px;
+  padding-right: 0.35rem;
+  text-align: right;
+  font-size: 0.72rem;
+  color: #6c757d;
+  border-top: 1px solid #f1f3f5;
+}
+
+.agenda-coluna-dia {
+  position: relative;
+  border-right: 1px solid #f1f3f5;
+  background: #fff;
+}
+
+.agenda-coluna-dia:last-child {
+  border-right: none;
+}
+
+.agenda-slot-dia {
+  height: 36px;
+  border-top: 1px solid #f1f3f5;
+}
+
+.agenda-compromisso {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  border-radius: 6px;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.72rem;
+  background: #e7f1ff;
+  border: 1px solid #9ec5fe;
+  color: #084298;
+  cursor: pointer;
+  overflow: hidden;
+}
