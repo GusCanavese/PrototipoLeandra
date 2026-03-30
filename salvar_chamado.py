@@ -694,6 +694,32 @@ def garantir_coluna_criador_chamado(conn):
         cursor.close()
 
 
+def garantir_coluna_anotacoes(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'chamados'
+              AND COLUMN_NAME = 'anotacoes'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE chamados
+                ADD COLUMN anotacoes LONGTEXT NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
 def preparar_tabela_chamados(nome_banco):
     agora = datetime.now()
     cache = chamados_cache.get(nome_banco)
@@ -702,6 +728,7 @@ def preparar_tabela_chamados(nome_banco):
 
     def operacao(conn):
         garantir_coluna_criador_chamado(conn)
+        garantir_coluna_anotacoes(conn)
 
     _executar_com_retry(nome_banco, operacao)
     chamados_cache[nome_banco] = agora + timedelta(minutes=10)
@@ -1365,7 +1392,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado, usuario_login, tipo_usuario):
     filtro_cliente = normalizar_tipo_usuario(tipo_usuario) == "Cliente"
     sql = """
         SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, usuario_criador
+               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, usuario_criador, anotacoes
         FROM chamados
         WHERE id_chamado = %s
     """
@@ -1412,6 +1439,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado, usuario_login, tipo_usuario):
         "partnershipPercent": chamado["parceria_porcentagem"] or "",
         "partnershipWith": chamado["parceria_com"] or "",
         "createdBy": chamado["usuario_criador"] or "",
+        "anotacoes": chamado["anotacoes"] if "anotacoes" in chamado else "",
         "openedAt": chamado["abertura"] or "",
         "lastUpdate": chamado["ultima_atualizacao"] or "",
         "financialClient": financeiro_cliente,
@@ -1533,8 +1561,8 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_login):
             """
             INSERT INTO chamados (
                 id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, usuario_criador
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, usuario_criador, anotacoes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 cliente = VALUES(cliente),
                 login_cliente = VALUES(login_cliente),
@@ -1548,7 +1576,8 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_login):
                 parceria_com = VALUES(parceria_com),
                 abertura = VALUES(abertura),
                 ultima_atualizacao = VALUES(ultima_atualizacao),
-                usuario_criador = COALESCE(usuario_criador, VALUES(usuario_criador))
+                usuario_criador = COALESCE(usuario_criador, VALUES(usuario_criador)),
+                anotacoes = VALUES(anotacoes)
             """,
             (
                 chamado_normalizado["id"],
@@ -1565,6 +1594,7 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_login):
                 chamado_normalizado["openedAt"],
                 chamado_normalizado["lastUpdate"],
                 chamado_normalizado["createdBy"],
+                chamado_normalizado.get("anotacoes", ""),
             ),
         )
 

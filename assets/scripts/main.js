@@ -37,6 +37,9 @@ let estadoAgenda = {
   compromissos: [],
   compromissoEdicao: null,
 };
+let timeoutAutosaveAnotacoes = null;
+let chamadoComAnotacoesPendentes = null;
+let anotacoesInternasAlteradas = false;
 
 
 
@@ -250,6 +253,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
             ...(usuarioCabecalho ? { "X-Auth-User": usuarioCabecalho } : {}),
             ...(opcoes.headers || {}),
           },
+          keepalive: true,
           ...opcoes,
           signal: controller.signal,
         });
@@ -1426,6 +1430,67 @@ function preencherAnexos(chamado) {
     : '<li class="list-group-item">Nenhum anexo registrado.</li>';
 }
 
+function configurarAnotacoesInternasChamado(chamado) {
+  const campoAnotacoes = document.getElementById("anotacoes-internas-chamado");
+  const cardAnotacoes = document.getElementById("card-anotacoes-internas") || (campoAnotacoes ? campoAnotacoes.closest('.card') : null);
+  
+  if (!campoAnotacoes) return;
+
+  const podeVisualizar = usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
+  
+  if (cardAnotacoes) {
+    cardAnotacoes.classList.toggle("d-none", !podeVisualizar);
+  }
+
+  if (!podeVisualizar) {
+    campoAnotacoes.value = "";
+    chamadoComAnotacoesPendentes = null;
+    anotacoesInternasAlteradas = false;
+    return;
+  }
+
+  campoAnotacoes.value = chamado?.anotacoes || "";
+
+  campoAnotacoes.oninput = () => {
+    chamado.anotacoes = campoAnotacoes.value || "";
+    if (timeoutAutosaveAnotacoes) clearTimeout(timeoutAutosaveAnotacoes);
+    timeoutAutosaveAnotacoes = setTimeout(() => {
+      chamado.anotacoes = campoAnotacoes.value || "";
+      chamadoComAnotacoesPendentes = chamado;
+      anotacoesInternasAlteradas = true;
+      timeoutAutosaveAnotacoes = null;
+    }, 1000);
+  };
+}
+
+async function salvarAnotacoesInternasPendentes() {
+  if (!anotacoesInternasAlteradas || !chamadoComAnotacoesPendentes?.id) return;
+  const campoAnotacoes = document.getElementById("anotacoes-internas-chamado");
+  if (campoAnotacoes) {
+    chamadoComAnotacoesPendentes.anotacoes = campoAnotacoes.value || "";
+  }
+  anotacoesInternasAlteradas = false;
+  await salvarChamadoIndividual(chamadoComAnotacoesPendentes);
+}
+
+function registrarPersistenciaAnotacoesNaSaida() {
+  if (window.__anotacoesInternasSaidaRegistrada) return;
+  window.__anotacoesInternasSaidaRegistrada = true;
+
+  const persistir = () => {
+    if (timeoutAutosaveAnotacoes) {
+      clearTimeout(timeoutAutosaveAnotacoes);
+      timeoutAutosaveAnotacoes = null;
+    }
+    salvarAnotacoesInternasPendentes().catch((erro) => {
+      console.error("Erro ao salvar anotações internas na saída:", erro);
+    });
+  };
+
+  window.addEventListener("beforeunload", persistir);
+  window.addEventListener("pagehide", persistir);
+}
+
 function registrarFormularioAtualizacao(chamado) {
   const form = document.getElementById("form-atualizacao");
   const btnConcluir = document.getElementById("btn-concluir-chamado");
@@ -1847,6 +1912,8 @@ async function carregarDetalhesChamado() {
   preencherHistorico(chamado);
   configurarImpressaoHistorico(chamado);
   preencherAnexos(chamado);
+  configurarAnotacoesInternasChamado(chamado);
+  registrarPersistenciaAnotacoesNaSaida();
   configurarPainelFinanceiro(chamado);
   registrarFormularioAtualizacao(chamado);
 }
