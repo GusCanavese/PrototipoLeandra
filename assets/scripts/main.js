@@ -1,9 +1,4 @@
-const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-
-const API_BASE_URL = isLocalhost 
-  ? "http://localhost:5000/api" 
-  : "https://gestup.up.railway.app/api"; 
-
+const API_BASE_URL = `${window.location.origin}/api`;
 const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const ID_INSTANCIA_ABA = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -34,6 +29,7 @@ let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
 let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
 let estadoResetSenha = null;
+let houveAlteracaoAnotacoesInternas = false;
 
 
 
@@ -222,6 +218,7 @@ function escaparHtml(valor) {
 
 async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
   const incluirBancoNoHeader = opcoesInternas.incluirBancoNoHeader !== false;
+  const suprimirLoading = opcoesInternas.suprimirLoading === true;
 
   const tentarComBase = async (baseUrl) => {
     for (let tentativa = 0; tentativa <= RETRY_BACKOFF_MS.length; tentativa += 1) {
@@ -235,6 +232,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
             ...(opcoes.headers || {}),
           },
           ...opcoes,
+          keepalive: true,
           signal: controller.signal,
         });
 
@@ -267,7 +265,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
     throw new Error("Falha na comunicação com a API.");
   };
 
-  iniciarOperacaoAssincrona();
+  if (!suprimirLoading) iniciarOperacaoAssincrona();
   try {
     let ultimoErro = null;
     for (const baseUrl of API_BASE_URLS) {
@@ -279,7 +277,7 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
     }
     throw ultimoErro || new Error("Falha na comunicação com a API.");
   } finally {
-    finalizarOperacaoAssincrona();
+    if (!suprimirLoading) finalizarOperacaoAssincrona();
   }
 }
 
@@ -1410,6 +1408,54 @@ function preencherAnexos(chamado) {
     : '<li class="list-group-item">Nenhum anexo registrado.</li>';
 }
 
+function configurarAnotacoesInternasChamado(chamado) {
+  const campoAnotacoes = document.getElementById("anotacoes-internas-chamado");
+  const cardAnotacoes = document.getElementById("card-anotacoes-internas") || (campoAnotacoes ? campoAnotacoes.closest(".card") : null);
+
+  if (!campoAnotacoes) return;
+
+  const podeVisualizar = usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
+
+  if (cardAnotacoes) {
+    cardAnotacoes.classList.toggle("d-none", !podeVisualizar);
+  }
+
+  if (!podeVisualizar) {
+    campoAnotacoes.value = "";
+    campoAnotacoes.oninput = null;
+    window.onpagehide = null;
+    window.onbeforeunload = null;
+    return;
+  }
+
+  campoAnotacoes.value = chamado?.anotacoes || "";
+  houveAlteracaoAnotacoesInternas = false;
+
+  campoAnotacoes.oninput = () => {
+    chamado.anotacoes = campoAnotacoes.value || "";
+    houveAlteracaoAnotacoesInternas = true;
+  };
+
+  const salvarAoSairDaPagina = () => {
+    if (!houveAlteracaoAnotacoesInternas) return;
+    houveAlteracaoAnotacoesInternas = false;
+    chamado.anotacoes = campoAnotacoes.value || "";
+    void requisicaoApi(
+      `/chamados/${encodeURIComponent(chamado.id)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(garantirFinanceiroChamado(chamado)),
+      },
+      { suprimirLoading: true },
+    ).catch((erro) => {
+      console.error("Erro ao salvar anotações na saída da tela:", erro);
+    });
+  };
+
+  window.onpagehide = salvarAoSairDaPagina;
+  window.onbeforeunload = salvarAoSairDaPagina;
+}
+
 function registrarFormularioAtualizacao(chamado) {
   const form = document.getElementById("form-atualizacao");
   const btnConcluir = document.getElementById("btn-concluir-chamado");
@@ -1832,6 +1878,7 @@ async function carregarDetalhesChamado() {
   configurarImpressaoHistorico(chamado);
   preencherAnexos(chamado);
   configurarPainelFinanceiro(chamado);
+  configurarAnotacoesInternasChamado(chamado);
   registrarFormularioAtualizacao(chamado);
 }
 

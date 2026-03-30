@@ -13,20 +13,26 @@ from email.message import EmailMessage
 from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
+from dotenv import load_dotenv
+load_dotenv()
 
+from dotenv import load_dotenv
+load_dotenv()
 
+import pymysql
+pymysql.install_as_MySQLdb()
 import MySQLdb
 import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
+from flask import send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-host     = "ballast.proxy.rlwy.net"
-user     = "root"
-password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
-db       = "teste"
-port     =  15192
-nome_banco = "teste"
-
+host       = os.getenv("DB_HOST", "ballast.proxy.rlwy.net")
+user       = os.getenv("DB_USER", "root")
+password   = os.getenv("DB_PASSWORD", "")
+db         = os.getenv("DB_NAME", "teste")
+port       = int(os.getenv("DB_PORT", 15192))
+nome_banco = db
 
 POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
@@ -170,6 +176,15 @@ def responder_preflight_options():
         return aplicar_headers_cors(make_response("", 200))
     return None
 
+@app.route("/")
+def home():
+    return send_from_directory(".", "login.html")
+
+@app.route("/<path:nome_arquivo>")
+def servir_arquivos(nome_arquivo):
+    if os.path.exists(nome_arquivo):
+        return send_from_directory(".", nome_arquivo)
+    return "Página não encontrada", 404
 
 @app.after_request
 def garantir_cors_global(resposta):
@@ -461,6 +476,21 @@ def normalizar_evento_financeiro(evento):
     }
 
 
+def atualizacao_financeira_placeholder(atualizacao):
+    if not isinstance(atualizacao, dict):
+        return False
+    mensagem = str(atualizacao.get("mensagem", "") or "").strip()
+    autor = str(atualizacao.get("autor", "") or "").strip()
+    anexos = normalizar_anexos(atualizacao.get("anexos"))
+    evento = normalizar_evento_financeiro(atualizacao.get("financeiro_evento"))
+    return (
+        autor == "Sistema"
+        and mensagem == "Registro financeiro inicial."
+        and not anexos
+        and evento is None
+    )
+
+
 def resolver_tabela_atualizacoes(conn):
     cursor = conn.cursor()
     try:
@@ -543,6 +573,39 @@ def preparar_tabela_atualizacoes_em_conexao(nome_banco, conn):
         "expira_em": agora + timedelta(minutes=10),
     }
     return tabela
+
+
+def garantir_coluna_anotacoes(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'chamados'
+              AND COLUMN_NAME = 'anotacoes'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE chamados
+                ADD COLUMN anotacoes LONGTEXT NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_chamados(nome_banco):
+    def operacao(conn):
+        garantir_coluna_anotacoes(conn)
+
+    _executar_com_retry(nome_banco, operacao)
 
 
 def garantir_coluna_primeiro_acesso(conn):
@@ -990,6 +1053,7 @@ def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
 
 
 def listar_chamados(nome_banco, limite=50, offset=0):
+    preparar_tabela_chamados(nome_banco)
     chamados = executar_select(
         nome_banco,
         """
@@ -1016,12 +1080,13 @@ def listar_chamados(nome_banco, limite=50, offset=0):
 
 
 def obter_chamado_detalhe(nome_banco, id_chamado):
+    preparar_tabela_chamados(nome_banco)
     tabela_atualizacoes = preparar_tabela_atualizacoes(nome_banco)
     chamado = executar_select(
         nome_banco,
         """
         SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, anotacoes
         FROM chamados
         WHERE id_chamado = %s
         """,
@@ -1043,6 +1108,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
     )
     financeiro_cliente = normalizar_financeiro(atualizacoes[0]["financeiro_cliente"]) if atualizacoes else []
     financeiro_escritorio = normalizar_financeiro(atualizacoes[0]["financeiro_escritorio"]) if atualizacoes else []
+    atualizacoes_exibiveis = [atu for atu in atualizacoes if not atualizacao_financeira_placeholder(atu)]
 
     return {
         "id": chamado["id_chamado"],
@@ -1058,6 +1124,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
         "partnershipWith": chamado["parceria_com"] or "",
         "openedAt": chamado["abertura"] or "",
         "lastUpdate": chamado["ultima_atualizacao"] or "",
+        "anotacoes": chamado["anotacoes"] if "anotacoes" in chamado else "",
         "financialClient": financeiro_cliente,
         "financialOffice": financeiro_escritorio,
         "updates": [
@@ -1068,12 +1135,13 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
                 "attachments": normalizar_anexos(atu["anexos"]),
                 "financialEvent": normalizar_evento_financeiro(atu.get("financeiro_evento")),
             }
-            for atu in atualizacoes
+            for atu in atualizacoes_exibiveis
         ],
     }
 
 
 def substituir_chamados(nome_banco, chamados):
+    preparar_tabela_chamados(nome_banco)
     def transacao(conn):
         cursor = conn.cursor()
         tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
@@ -1087,8 +1155,8 @@ def substituir_chamados(nome_banco, chamados):
                 """
                 INSERT INTO chamados (
                     id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, anotacoes
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chamado["id"],
@@ -1104,6 +1172,7 @@ def substituir_chamados(nome_banco, chamados):
                     chamado.get("partnershipWith", ""),
                     chamado["openedAt"],
                     chamado["lastUpdate"],
+                    chamado.get("anotacoes", ""),
                 ),
             )
 
@@ -1134,6 +1203,7 @@ def substituir_chamados(nome_banco, chamados):
 
 
 def salvar_chamado_individual(nome_banco, chamado):
+    preparar_tabela_chamados(nome_banco)
     chamado_normalizado = dict(chamado or {})
     chamado_normalizado["financialClient"] = normalizar_financeiro(chamado_normalizado.get("financialClient", []))
     chamado_normalizado["financialOffice"] = normalizar_financeiro(chamado_normalizado.get("financialOffice", []))
@@ -1167,8 +1237,8 @@ def salvar_chamado_individual(nome_banco, chamado):
             """
             INSERT INTO chamados (
                 id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, anotacoes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 cliente = VALUES(cliente),
                 login_cliente = VALUES(login_cliente),
@@ -1181,7 +1251,8 @@ def salvar_chamado_individual(nome_banco, chamado):
                 parceria_porcentagem = VALUES(parceria_porcentagem),
                 parceria_com = VALUES(parceria_com),
                 abertura = VALUES(abertura),
-                ultima_atualizacao = VALUES(ultima_atualizacao)
+                ultima_atualizacao = VALUES(ultima_atualizacao),
+                anotacoes = VALUES(anotacoes)
             """,
             (
                 chamado_normalizado["id"],
@@ -1197,6 +1268,7 @@ def salvar_chamado_individual(nome_banco, chamado):
                 chamado_normalizado.get("partnershipWith", ""),
                 chamado_normalizado["openedAt"],
                 chamado_normalizado["lastUpdate"],
+                chamado_normalizado.get("anotacoes", ""),
             ),
         )
 
@@ -1292,6 +1364,7 @@ def salvar_chamado_individual(nome_banco, chamado):
 
 
 def excluir_chamado(nome_banco, id_chamado):
+    preparar_tabela_chamados(nome_banco)
     executar_write(nome_banco, "DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
 
 
@@ -1572,6 +1645,10 @@ async def api_esqueci_senha_redefinir():
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
+@app.route("/api/health", methods=["GET"])
+def healthcheck():
+    return responder_json({"ok": True, "status": "healthy"})
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 5000))
