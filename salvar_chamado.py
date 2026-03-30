@@ -13,11 +13,8 @@ from email.message import EmailMessage
 from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
-<<<<<<< HEAD
 from dotenv import load_dotenv
 load_dotenv()
-=======
->>>>>>> 34d88168d1c1111ddddd76026b28723dedd981a2
 
 from dotenv import load_dotenv
 load_dotenv()
