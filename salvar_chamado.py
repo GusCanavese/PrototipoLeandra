@@ -575,6 +575,39 @@ def preparar_tabela_atualizacoes_em_conexao(nome_banco, conn):
     return tabela
 
 
+def garantir_coluna_anotacoes(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'chamados'
+              AND COLUMN_NAME = 'anotacoes'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE chamados
+                ADD COLUMN anotacoes LONGTEXT NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_chamados(nome_banco):
+    def operacao(conn):
+        garantir_coluna_anotacoes(conn)
+
+    _executar_com_retry(nome_banco, operacao)
+
+
 def garantir_coluna_primeiro_acesso(conn):
     cursor = conn.cursor()
     try:
@@ -1020,6 +1053,7 @@ def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
 
 
 def listar_chamados(nome_banco, limite=50, offset=0):
+    preparar_tabela_chamados(nome_banco)
     chamados = executar_select(
         nome_banco,
         """
@@ -1046,12 +1080,13 @@ def listar_chamados(nome_banco, limite=50, offset=0):
 
 
 def obter_chamado_detalhe(nome_banco, id_chamado):
+    preparar_tabela_chamados(nome_banco)
     tabela_atualizacoes = preparar_tabela_atualizacoes(nome_banco)
     chamado = executar_select(
         nome_banco,
         """
         SELECT id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
+               numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, anotacoes
         FROM chamados
         WHERE id_chamado = %s
         """,
@@ -1089,6 +1124,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
         "partnershipWith": chamado["parceria_com"] or "",
         "openedAt": chamado["abertura"] or "",
         "lastUpdate": chamado["ultima_atualizacao"] or "",
+        "anotacoes": chamado["anotacoes"] if "anotacoes" in chamado else "",
         "financialClient": financeiro_cliente,
         "financialOffice": financeiro_escritorio,
         "updates": [
@@ -1105,6 +1141,7 @@ def obter_chamado_detalhe(nome_banco, id_chamado):
 
 
 def substituir_chamados(nome_banco, chamados):
+    preparar_tabela_chamados(nome_banco)
     def transacao(conn):
         cursor = conn.cursor()
         tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
@@ -1118,8 +1155,8 @@ def substituir_chamados(nome_banco, chamados):
                 """
                 INSERT INTO chamados (
                     id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, anotacoes
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chamado["id"],
@@ -1135,6 +1172,7 @@ def substituir_chamados(nome_banco, chamados):
                     chamado.get("partnershipWith", ""),
                     chamado["openedAt"],
                     chamado["lastUpdate"],
+                    chamado.get("anotacoes", ""),
                 ),
             )
 
@@ -1165,6 +1203,7 @@ def substituir_chamados(nome_banco, chamados):
 
 
 def salvar_chamado_individual(nome_banco, chamado):
+    preparar_tabela_chamados(nome_banco)
     chamado_normalizado = dict(chamado or {})
     chamado_normalizado["financialClient"] = normalizar_financeiro(chamado_normalizado.get("financialClient", []))
     chamado_normalizado["financialOffice"] = normalizar_financeiro(chamado_normalizado.get("financialOffice", []))
@@ -1198,8 +1237,8 @@ def salvar_chamado_individual(nome_banco, chamado):
             """
             INSERT INTO chamados (
                 id_chamado, cliente, login_cliente, resumo, descricao, prioridade, status,
-                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                numero_processo, parceria, parceria_porcentagem, parceria_com, abertura, ultima_atualizacao, anotacoes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 cliente = VALUES(cliente),
                 login_cliente = VALUES(login_cliente),
@@ -1212,7 +1251,8 @@ def salvar_chamado_individual(nome_banco, chamado):
                 parceria_porcentagem = VALUES(parceria_porcentagem),
                 parceria_com = VALUES(parceria_com),
                 abertura = VALUES(abertura),
-                ultima_atualizacao = VALUES(ultima_atualizacao)
+                ultima_atualizacao = VALUES(ultima_atualizacao),
+                anotacoes = VALUES(anotacoes)
             """,
             (
                 chamado_normalizado["id"],
@@ -1228,6 +1268,7 @@ def salvar_chamado_individual(nome_banco, chamado):
                 chamado_normalizado.get("partnershipWith", ""),
                 chamado_normalizado["openedAt"],
                 chamado_normalizado["lastUpdate"],
+                chamado_normalizado.get("anotacoes", ""),
             ),
         )
 
@@ -1323,6 +1364,7 @@ def salvar_chamado_individual(nome_banco, chamado):
 
 
 def excluir_chamado(nome_banco, id_chamado):
+    preparar_tabela_chamados(nome_banco)
     executar_write(nome_banco, "DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
 
 
