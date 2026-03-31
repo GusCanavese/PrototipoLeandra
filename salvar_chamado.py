@@ -20,6 +20,12 @@ import MySQLdb.cursors
 from flask import Flask, jsonify, make_response, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+host       = os.getenv("MYSQLHOST") or os.getenv("DB_HOST")
+port       = int(os.getenv("MYSQLPORT") or os.getenv("DB_PORT", 3306))
+user       = os.getenv("MYSQLUSER") or os.getenv("DB_USER")
+password   = os.getenv("MYSQLPASSWORD") or os.getenv("DB_PASSWORD")
+db         = os.getenv("DB_NAME", "EscritorioFabRaq")
+nome_banco = db
 host     = "ballast.proxy.rlwy.net"
 user     = "root"
 password = "cUxQKiTNIHZUlBQhphYhiESVTcrCJTGO"
