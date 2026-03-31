@@ -25,11 +25,11 @@ from flask import Flask, jsonify, make_response, request
 from flask import send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-host       = os.getenv("DB_HOST", "ballast.proxy.rlwy.net")
-user       = os.getenv("DB_USER", "root")
-password   = os.getenv("DB_PASSWORD", "")
+host       = os.getenv("MYSQLHOST") or os.getenv("DB_HOST")
+port       = int(os.getenv("MYSQLPORT") or os.getenv("DB_PORT", 3306))
+user       = os.getenv("MYSQLUSER") or os.getenv("DB_USER")
+password   = os.getenv("MYSQLPASSWORD") or os.getenv("DB_PASSWORD")
 db         = os.getenv("DB_NAME", "EscritorioFabRaq")
-port       = int(os.getenv("DB_PORT", 57072))
 nome_banco = db
 
 POOL_SIZE = 8
