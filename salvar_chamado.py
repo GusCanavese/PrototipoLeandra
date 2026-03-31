@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import os
 import ssl
@@ -13,6 +14,12 @@ from email.message import EmailMessage
 from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("advocacia")
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -38,6 +45,11 @@ VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
 app = Flask(__name__)
 
+logger.info(
+    "[startup] Configuração do banco — host=%s port=%s banco=%s user=%s",
+    host, port, db, user,
+)
+
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
 validacao_bancos_cache = {}
@@ -62,7 +74,14 @@ PASSWORD_RESET_MAX_FAILED_ATTEMPTS = 5
 
 def criar_conexao(nome_banco=None):
     banco_destino = nome_banco or db
-    return MySQLdb.connect(host=host, user=user, passwd=password, db=banco_destino, port=port, charset="utf8mb4")
+    logger.info("[db] Criando nova conexão — host=%s port=%s banco=%s user=%s", host, port, banco_destino, user)
+    try:
+        conn = MySQLdb.connect(host=host, user=user, passwd=password, db=banco_destino, port=port, charset="utf8mb4")
+        logger.info("[db] Conexão estabelecida com sucesso — host=%s port=%s banco=%s", host, port, banco_destino)
+        return conn
+    except MySQLdb.OperationalError as erro:
+        logger.error("[db] Falha ao conectar — host=%s port=%s banco=%s user=%s erro=%s", host, port, banco_destino, user, erro)
+        raise
 
 
 def obter_pool(nome_banco=None):
@@ -1934,28 +1953,64 @@ async def api_agenda_excluir(compromisso_id):
 
 @app.route("/api/login", methods=["POST"])
 async def api_login():
-    dados = request.json or {}
+    ip = obter_ip_requisicao()
+    logger.info("[login] Requisição recebida de %s", ip)
+
+    corpo = request.get_json(silent=True)
+    if corpo is None:
+        logger.warning("[login] Corpo da requisição ausente ou Content-Type inválido (IP: %s)", ip)
+        return responder_json({"ok": False, "erro": "Corpo da requisição inválido. Envie JSON com Content-Type: application/json."}, 400)
+
+    dados = corpo
     usuario = (dados.get("usuario") or "").strip()
     senha = (dados.get("senha") or "").strip()
+    nome_banco = (dados.get("banco") or "EscritorioRaqFab").strip()
 
-    try:
-        nome_banco = dados.get("banco") or "EscritorioRaqFab"
-        valido = await executar_em_thread(nome_banco_valido, nome_banco)
-        if not valido:
-            raise ValueError("Nome de banco inválido.")
-    except (ValueError, RuntimeError) as erro:
-        return responder_json({"ok": False, "erro": str(erro)}, 400)
+    logger.info("[login] Tentativa de login — usuário: %r, banco: %r (IP: %s)", usuario, nome_banco, ip)
+
+    if not usuario:
+        logger.warning("[login] Campo 'usuario' ausente ou vazio (IP: %s)", ip)
+        return responder_json({"ok": False, "erro": "O campo 'usuario' é obrigatório."}, 400)
+
+    if not senha:
+        logger.warning("[login] Campo 'senha' ausente ou vazio (IP: %s)", ip)
+        return responder_json({"ok": False, "erro": "O campo 'senha' é obrigatório."}, 400)
+
+    if not nome_banco_valido(nome_banco):
+        logger.warning("[login] Nome de banco inválido: %r (IP: %s)", nome_banco, ip)
+        return responder_json({"ok": False, "erro": "Nome de banco inválido."}, 400)
 
     try:
         autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
-    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
-        return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
+    except MySQLdb.OperationalError as erro:
+        logger.error(
+            "[login] Erro operacional ao conectar ao banco '%s' (host=%s port=%s): %s (IP: %s)",
+            nome_banco, host, port, erro, ip,
+        )
+        return responder_json(
+            {"ok": False, "erro": f"Não foi possível conectar ao banco de dados. Verifique as configurações do servidor. Detalhe: {erro}"},
+            500,
+        )
+    except MySQLdb.ProgrammingError as erro:
+        logger.error("[login] Banco '%s' não encontrado ou erro de SQL: %s (IP: %s)", nome_banco, erro, ip)
+        return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado ou inacessível. Detalhe: {erro}"}, 500)
+    except RuntimeError as erro:
+        logger.error("[login] Erro de pool de conexões para banco '%s': %s (IP: %s)", nome_banco, erro, ip)
+        return responder_json({"ok": False, "erro": f"Serviço temporariamente indisponível: {erro}"}, 503)
+    except Exception as erro:
+        logger.exception("[login] Erro inesperado durante autenticação do usuário %r no banco '%s' (IP: %s)", usuario, nome_banco, ip)
+        return responder_json({"ok": False, "erro": f"Erro interno do servidor: {erro}"}, 500)
+
     if not autenticado:
+        logger.warning("[login] Credenciais inválidas para usuário %r no banco '%s' (IP: %s)", usuario, nome_banco, ip)
         return responder_json({"ok": False, "erro": "Credenciais inválidas."}, 401)
 
     tipo = "Advogado" if autenticado["tipo"] == "Técnico" else autenticado["tipo"]
     redirect = "admin.html" if tipo == "Administrador" else ("index.html" if tipo == "Advogado" else "cliente.html")
     cliente_id = autenticado["usuario"] if tipo == "Cliente" else ""
+
+    logger.info("[login] Login bem-sucedido — usuário: %r, tipo: %r, banco: %r (IP: %s)", autenticado["usuario"], tipo, nome_banco, ip)
+
     return responder_json(
         {
             "ok": True,
