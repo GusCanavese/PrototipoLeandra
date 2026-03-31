@@ -25,7 +25,7 @@ from flask import Flask, jsonify, make_response, request
 from flask import send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-host       = os.getenv("DB_HOST", "ballast.proxy.rlwy.net")
+host       = os.getenv("DB_HOST", "hopper.proxy.rlwy.net")
 user       = os.getenv("DB_USER", "root")
 password   = os.getenv("DB_PASSWORD", "")
 db         = os.getenv("DB_NAME", "EscritorioFabRaq")
