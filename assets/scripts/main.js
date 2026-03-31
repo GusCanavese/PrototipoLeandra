@@ -1,4 +1,4 @@
-const API_BASE_URL = `${window.location.protocol}//${window.location.hostname || "localhost"}:5000/api`;
+const API_BASE_URL = `${window.location.origin}/api`;
 const API_BASE_URLS = [API_BASE_URL];
 const CANAL_ATUALIZACAO_CHAMADOS = "chamadosAtualizados";
 const ID_INSTANCIA_ABA = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -18,6 +18,9 @@ const TEMPO_LIMITE_INATIVIDADE_MS = 20 * 60 * 1000;
 const INTERVALO_VERIFICACAO_INATIVIDADE_MS = 30 * 1000;
 const TEMPO_MAXIMO_REQUISICAO_MS = 25000;
 const RETRY_BACKOFF_MS = [350, 900];
+const AGENDA_HORA_INICIO = 6;
+const AGENDA_HORA_FIM = 22;
+const AGENDA_BLOCO_MINUTOS = 30;
 const filtros = {client:"", summary:"", lastUpdate:"", openedAt:"", priority:"", status:"",};
 const credenciaisLogin = {};
 
@@ -27,8 +30,16 @@ let usuarioAutenticado = null;
 let promessaCarregamentoChamados = null;
 let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
-let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
+let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "EscritorioFabRaq";
 let estadoResetSenha = null;
+let estadoAgenda = {
+  inicioSemana: "",
+  compromissos: [],
+  compromissoEdicao: null,
+};
+let timeoutAutosaveAnotacoes = null;
+let chamadoComAnotacoesPendentes = null;
+let anotacoesInternasAlteradas = false;
 
 
 
@@ -75,11 +86,22 @@ function configurarAlternadoresSenha() {
 }
 
 function obterBancoProjetoAtual() {
-  return (bancoProjetoAtivo || "teste").trim() || "teste";
+  return (bancoProjetoAtivo || "EscritorioFabRaq").trim() || "EscritorioFabRaq";
+}
+
+function obterUsuarioCabecalhoRequisicao() {
+  const usuarioAtual = (usuarioAutenticado?.usuario || "").trim();
+  if (usuarioAtual) return usuarioAtual;
+  try {
+    const salvo = JSON.parse(localStorage.getItem(CHAVE_STORAGE_LOGIN) || "null");
+    return (salvo?.usuario || "").trim();
+  } catch (_) {
+    return "";
+  }
 }
 
 function definirBancoProjetoAtivo(nomeBanco) {
-  bancoProjetoAtivo = (nomeBanco || "teste").trim();
+  bancoProjetoAtivo = (nomeBanco || "EscritorioFabRaq").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
 }
 
@@ -217,6 +239,7 @@ function escaparHtml(valor) {
 
 async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
   const incluirBancoNoHeader = opcoesInternas.incluirBancoNoHeader !== false;
+  const usuarioCabecalho = obterUsuarioCabecalhoRequisicao();
 
   const tentarComBase = async (baseUrl) => {
     for (let tentativa = 0; tentativa <= RETRY_BACKOFF_MS.length; tentativa += 1) {
@@ -227,8 +250,10 @@ async function requisicaoApi(caminho, opcoes = {}, opcoesInternas = {}) {
           headers: {
             "Content-Type": "application/json",
             ...(incluirBancoNoHeader ? { "X-Project-DB": obterBancoProjetoAtual() } : {}),
+            ...(usuarioCabecalho ? { "X-Auth-User": usuarioCabecalho } : {}),
             ...(opcoes.headers || {}),
           },
+          keepalive: true,
           ...opcoes,
           signal: controller.signal,
         });
@@ -1405,6 +1430,67 @@ function preencherAnexos(chamado) {
     : '<li class="list-group-item">Nenhum anexo registrado.</li>';
 }
 
+function configurarAnotacoesInternasChamado(chamado) {
+  const campoAnotacoes = document.getElementById("anotacoes-internas-chamado");
+  const cardAnotacoes = document.getElementById("card-anotacoes-internas") || (campoAnotacoes ? campoAnotacoes.closest('.card') : null);
+  
+  if (!campoAnotacoes) return;
+
+  const podeVisualizar = usuarioEhPerfilInterno(usuarioAutenticado?.tipo);
+  
+  if (cardAnotacoes) {
+    cardAnotacoes.classList.toggle("d-none", !podeVisualizar);
+  }
+
+  if (!podeVisualizar) {
+    campoAnotacoes.value = "";
+    chamadoComAnotacoesPendentes = null;
+    anotacoesInternasAlteradas = false;
+    return;
+  }
+
+  campoAnotacoes.value = chamado?.anotacoes || "";
+
+  campoAnotacoes.oninput = () => {
+    chamado.anotacoes = campoAnotacoes.value || "";
+    if (timeoutAutosaveAnotacoes) clearTimeout(timeoutAutosaveAnotacoes);
+    timeoutAutosaveAnotacoes = setTimeout(() => {
+      chamado.anotacoes = campoAnotacoes.value || "";
+      chamadoComAnotacoesPendentes = chamado;
+      anotacoesInternasAlteradas = true;
+      timeoutAutosaveAnotacoes = null;
+    }, 1000);
+  };
+}
+
+async function salvarAnotacoesInternasPendentes() {
+  if (!anotacoesInternasAlteradas || !chamadoComAnotacoesPendentes?.id) return;
+  const campoAnotacoes = document.getElementById("anotacoes-internas-chamado");
+  if (campoAnotacoes) {
+    chamadoComAnotacoesPendentes.anotacoes = campoAnotacoes.value || "";
+  }
+  anotacoesInternasAlteradas = false;
+  await salvarChamadoIndividual(chamadoComAnotacoesPendentes);
+}
+
+function registrarPersistenciaAnotacoesNaSaida() {
+  if (window.__anotacoesInternasSaidaRegistrada) return;
+  window.__anotacoesInternasSaidaRegistrada = true;
+
+  const persistir = () => {
+    if (timeoutAutosaveAnotacoes) {
+      clearTimeout(timeoutAutosaveAnotacoes);
+      timeoutAutosaveAnotacoes = null;
+    }
+    salvarAnotacoesInternasPendentes().catch((erro) => {
+      console.error("Erro ao salvar anotações internas na saída:", erro);
+    });
+  };
+
+  window.addEventListener("beforeunload", persistir);
+  window.addEventListener("pagehide", persistir);
+}
+
 function registrarFormularioAtualizacao(chamado) {
   const form = document.getElementById("form-atualizacao");
   const btnConcluir = document.getElementById("btn-concluir-chamado");
@@ -1826,6 +1912,8 @@ async function carregarDetalhesChamado() {
   preencherHistorico(chamado);
   configurarImpressaoHistorico(chamado);
   preencherAnexos(chamado);
+  configurarAnotacoesInternasChamado(chamado);
+  registrarPersistenciaAnotacoesNaSaida();
   configurarPainelFinanceiro(chamado);
   registrarFormularioAtualizacao(chamado);
 }
@@ -2365,6 +2453,253 @@ async function configurarPainelAdministrador() {
   });
 }
 
+function formatarDataIsoLocal(data) {
+  const ano = data.getFullYear();
+  const mes = String(data.getMonth() + 1).padStart(2, "0");
+  const dia = String(data.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+
+function obterInicioSemana(dataBase = new Date()) {
+  const data = new Date(dataBase);
+  data.setHours(0, 0, 0, 0);
+  const diaSemana = data.getDay();
+  const deslocamento = diaSemana === 0 ? -6 : 1 - diaSemana;
+  data.setDate(data.getDate() + deslocamento);
+  return data;
+}
+
+function adicionarDias(data, dias) {
+  const copia = new Date(data);
+  copia.setDate(copia.getDate() + dias);
+  return copia;
+}
+
+function gerarHorariosAgenda() {
+  const horarios = [];
+  for (let totalMinutos = AGENDA_HORA_INICIO * 60; totalMinutos <= AGENDA_HORA_FIM * 60; totalMinutos += AGENDA_BLOCO_MINUTOS) {
+    const hora = String(Math.floor(totalMinutos / 60)).padStart(2, "0");
+    const minuto = String(totalMinutos % 60).padStart(2, "0");
+    horarios.push(`${hora}:${minuto}`);
+  }
+  return horarios;
+}
+
+function formatarDiaCabecalhoAgenda(data) {
+  return data.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
+}
+
+function minutosDesdeInicioAgenda(hora) {
+  const [h, m] = String(hora || "00:00").split(":").map(Number);
+  return h * 60 + m - AGENDA_HORA_INICIO * 60;
+}
+
+function compromissoDentroDaJanelaAgenda(compromisso) {
+  const inicio = minutosDesdeInicioAgenda(compromisso.hora_inicio);
+  const fim = inicio + Number(compromisso.duracao_minutos || 0);
+  const limite = (AGENDA_HORA_FIM - AGENDA_HORA_INICIO) * 60;
+  return fim > 0 && inicio < limite;
+}
+
+async function carregarCompromissosSemanaAgenda() {
+  const inicioSemana = estadoAgenda.inicioSemana;
+  const dados = await requisicaoApi(`/agenda/compromissos?inicio_semana=${encodeURIComponent(inicioSemana)}`);
+  estadoAgenda.compromissos = dados.compromissos || [];
+}
+
+function abrirModalCompromisso(compromisso = null) {
+  estadoAgenda.compromissoEdicao = compromisso ? { ...compromisso } : null;
+  const tituloModal = document.getElementById("titulo-modal-compromisso");
+  const campoTitulo = document.getElementById("agenda-titulo");
+  const campoDia = document.getElementById("agenda-dia");
+  const campoHora = document.getElementById("agenda-hora-inicio");
+  const campoDuracao = document.getElementById("agenda-duracao");
+  const btnExcluir = document.getElementById("btn-excluir-compromisso");
+
+  if (!tituloModal || !campoTitulo || !campoDia || !campoHora || !campoDuracao || !btnExcluir) return;
+
+  if (compromisso) {
+    tituloModal.textContent = "Editar compromisso";
+    campoTitulo.value = compromisso.titulo || "";
+    campoDia.value = compromisso.dia || "";
+    campoHora.value = compromisso.hora_inicio || "";
+    campoDuracao.value = compromisso.duracao_minutos || 30;
+    btnExcluir.classList.remove("d-none");
+  } else {
+    const inicioSemana = new Date(`${estadoAgenda.inicioSemana}T00:00:00`);
+    tituloModal.textContent = "Novo compromisso";
+    campoTitulo.value = "";
+    campoDia.value = formatarDataIsoLocal(new Date());
+    campoHora.value = `${String(AGENDA_HORA_INICIO).padStart(2, "0")}:00`;
+    campoDuracao.value = 30;
+    if (campoDia.value < formatarDataIsoLocal(inicioSemana) || campoDia.value > formatarDataIsoLocal(adicionarDias(inicioSemana, 6))) {
+      campoDia.value = formatarDataIsoLocal(inicioSemana);
+    }
+    btnExcluir.classList.add("d-none");
+  }
+
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById("modal-compromisso"));
+  modal.show();
+}
+
+function atualizarCabecalhoSemanaAgenda() {
+  const elIntervalo = document.getElementById("agenda-intervalo-semana");
+  if (!elIntervalo || !estadoAgenda.inicioSemana) return;
+  const inicio = new Date(`${estadoAgenda.inicioSemana}T00:00:00`);
+  const fim = adicionarDias(inicio, 6);
+  elIntervalo.textContent = `${inicio.toLocaleDateString("pt-BR")} a ${fim.toLocaleDateString("pt-BR")}`;
+}
+
+function renderizarAgendaSemanal() {
+  const container = document.getElementById("agenda-semanal-grid");
+  if (!container || !estadoAgenda.inicioSemana) return;
+
+  const inicio = new Date(`${estadoAgenda.inicioSemana}T00:00:00`);
+  const horarios = gerarHorariosAgenda();
+  const dias = Array.from({ length: 7 }, (_, i) => adicionarDias(inicio, i));
+
+  const cabecalhoDias = dias.map((dia) => (
+    `<div class="agenda-cabecalho-item"><strong>${formatarDiaCabecalhoAgenda(dia)}</strong></div>`
+  )).join("");
+  const colunasDias = dias.map((dia) => {
+    const diaIso = formatarDataIsoLocal(dia);
+    const blocos = horarios.slice(0, -1).map(() => '<div class="agenda-slot-dia"></div>').join("");
+    const compromissosDia = estadoAgenda.compromissos
+      .filter((item) => item.dia === diaIso && compromissoDentroDaJanelaAgenda(item))
+      .map((item) => {
+        const topo = (minutosDesdeInicioAgenda(item.hora_inicio) / AGENDA_BLOCO_MINUTOS) * 36;
+        const altura = (Number(item.duracao_minutos) / AGENDA_BLOCO_MINUTOS) * 36;
+        const titulo = escaparHtml(item.titulo || "");
+        const hora = escaparHtml(item.hora_inicio || "");
+        return `<button type="button" class="agenda-compromisso" style="top:${topo}px;height:${Math.max(36, altura)}px" data-id-compromisso="${item.id}">
+          <strong>${titulo}</strong><br><small>${hora} · ${item.duracao_minutos} min</small>
+        </button>`;
+      }).join("");
+    return `<div class="agenda-coluna-dia" data-dia="${diaIso}">${blocos}${compromissosDia}</div>`;
+  }).join("");
+
+  container.innerHTML = `
+    <div class="agenda-semanal">
+      <div class="agenda-cabecalho">
+        <div class="agenda-cabecalho-item"></div>
+        ${cabecalhoDias}
+      </div>
+      <div class="agenda-corpo">
+        <div class="agenda-coluna-horarios">
+          ${horarios.slice(0, -1).map((hora) => `<div class="agenda-slot-hora">${hora}</div>`).join("")}
+        </div>
+        ${colunasDias}
+      </div>
+    </div>
+  `;
+
+  container.querySelectorAll("[data-id-compromisso]").forEach((botao) => {
+    botao.addEventListener("click", () => {
+      const id = Number(botao.getAttribute("data-id-compromisso"));
+      const compromisso = estadoAgenda.compromissos.find((item) => Number(item.id) === id);
+      if (compromisso) abrirModalCompromisso(compromisso);
+    });
+  });
+}
+
+async function recarregarAgendaSemanal() {
+  await carregarCompromissosSemanaAgenda();
+  atualizarCabecalhoSemanaAgenda();
+  renderizarAgendaSemanal();
+}
+
+function validarFormularioAgenda({ titulo, dia, hora_inicio, duracao_minutos }) {
+  if (!titulo) throw new Error("Informe o título.");
+  if (!dia) throw new Error("Informe o dia.");
+  if (!hora_inicio) throw new Error("Informe a hora de início.");
+  if (!duracao_minutos) throw new Error("Informe a duração.");
+  const duracao = Number(duracao_minutos);
+  if (!Number.isInteger(duracao) || duracao <= 0 || duracao % 30 !== 0) {
+    throw new Error("A duração deve ser em blocos de 30 minutos.");
+  }
+}
+
+function registrarFormularioAgenda() {
+  const form = document.getElementById("form-compromisso-agenda");
+  const btnExcluir = document.getElementById("btn-excluir-compromisso");
+  if (!form || !btnExcluir) return;
+
+  form.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    const payload = {
+      titulo: (document.getElementById("agenda-titulo")?.value || "").trim(),
+      dia: (document.getElementById("agenda-dia")?.value || "").trim(),
+      hora_inicio: (document.getElementById("agenda-hora-inicio")?.value || "").trim(),
+      duracao_minutos: Number(document.getElementById("agenda-duracao")?.value || 0),
+    };
+
+    try {
+      validarFormularioAgenda(payload);
+      if (estadoAgenda.compromissoEdicao?.id) {
+        await requisicaoApi(`/agenda/compromissos/${encodeURIComponent(estadoAgenda.compromissoEdicao.id)}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await requisicaoApi("/agenda/compromissos", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("modal-compromisso")).hide();
+      await recarregarAgendaSemanal();
+    } catch (erro) {
+      alert(erro.message || "Não foi possível salvar o compromisso.");
+    }
+  });
+
+  btnExcluir.addEventListener("click", async () => {
+    const id = estadoAgenda.compromissoEdicao?.id;
+    if (!id) return;
+    if (!confirm("Deseja excluir este compromisso?")) return;
+    try {
+      await requisicaoApi(`/agenda/compromissos/${encodeURIComponent(id)}`, { method: "DELETE" });
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("modal-compromisso")).hide();
+      await recarregarAgendaSemanal();
+    } catch (erro) {
+      alert(erro.message || "Não foi possível excluir o compromisso.");
+    }
+  });
+}
+
+async function configurarPaginaAgenda() {
+  const container = document.getElementById("pagina-agenda");
+  if (!container) return;
+
+  estadoAgenda = {
+    inicioSemana: formatarDataIsoLocal(obterInicioSemana(new Date())),
+    compromissos: [],
+    compromissoEdicao: null,
+  };
+
+  document.getElementById("btn-semana-anterior")?.addEventListener("click", async () => {
+    const inicio = new Date(`${estadoAgenda.inicioSemana}T00:00:00`);
+    estadoAgenda.inicioSemana = formatarDataIsoLocal(adicionarDias(inicio, -7));
+    await recarregarAgendaSemanal();
+  });
+
+  document.getElementById("btn-proxima-semana")?.addEventListener("click", async () => {
+    const inicio = new Date(`${estadoAgenda.inicioSemana}T00:00:00`);
+    estadoAgenda.inicioSemana = formatarDataIsoLocal(adicionarDias(inicio, 7));
+    await recarregarAgendaSemanal();
+  });
+
+  document.getElementById("btn-semana-atual")?.addEventListener("click", async () => {
+    estadoAgenda.inicioSemana = formatarDataIsoLocal(obterInicioSemana(new Date()));
+    await recarregarAgendaSemanal();
+  });
+
+  document.getElementById("btn-novo-compromisso")?.addEventListener("click", () => abrirModalCompromisso(null));
+
+  registrarFormularioAgenda();
+  await recarregarAgendaSemanal();
+}
+
 function registrarFiltros() {
   document.querySelectorAll(".filter-input").forEach((campo) => {
     campo.addEventListener("input", (evento) => {
@@ -2453,6 +2788,7 @@ async function inicializar() {
   const paginaCriacao = document.getElementById("pagina-criacao");
   const paginaCadastroCliente = document.getElementById("pagina-cadastro-cliente");
   const paginaAdmin = document.getElementById("pagina-admin");
+  const paginaAgenda = document.getElementById("pagina-agenda");
 
   await configurarTelaLoginV2();
 
@@ -2475,14 +2811,14 @@ async function inicializar() {
     return;
   }
 
-  if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin)) {
+  if (!usuarioAutenticado && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin || paginaAgenda)) {
     redirecionarParaLogin();
     return;
   }
 
   if (
     usuarioAutenticado?.precisaTrocarSenha
-    && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin)
+    && (paginaDetalhes || paginaListaTecnico || paginaCliente || paginaCriacao || paginaCadastroCliente || paginaAdmin || paginaAgenda)
   ) {
     window.location.href = "login.html";
     return;
@@ -2504,6 +2840,11 @@ async function inicializar() {
   }
 
   if (paginaCadastroCliente && !usuarioPodeCadastrarUsuarios()) {
+    window.location.href = "cliente.html";
+    return;
+  }
+
+  if (paginaAgenda && !usuarioEhPerfilInterno(usuarioAutenticado?.tipo)) {
     window.location.href = "cliente.html";
     return;
   }
@@ -2532,6 +2873,7 @@ async function inicializar() {
   }
   if (paginaCadastroCliente) registrarFormularioCadastroCliente();
   if (paginaAdmin) await configurarPainelAdministrador();
+  if (paginaAgenda) await configurarPaginaAgenda();
   if (paginaDetalhes) {
     atualizarPainelIdentificacao();
     await carregarDetalhesChamado();
