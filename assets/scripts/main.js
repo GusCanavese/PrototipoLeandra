@@ -30,7 +30,7 @@ let usuarioAutenticado = null;
 let promessaCarregamentoChamados = null;
 let promessaCarregamentoClientes = null;
 let operacoesPendentes = 0;
-let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "teste";
+let bancoProjetoAtivo = localStorage.getItem(CHAVE_STORAGE_BANCO) || "EscritorioFabRaq";
 let estadoResetSenha = null;
 let estadoAgenda = {
   inicioSemana: "",
@@ -86,7 +86,7 @@ function configurarAlternadoresSenha() {
 }
 
 function obterBancoProjetoAtual() {
-  return (bancoProjetoAtivo || "teste").trim() || "teste";
+  return (bancoProjetoAtivo || "EscritorioFabRaq").trim() || "EscritorioFabRaq";
 }
 
 function obterUsuarioCabecalhoRequisicao() {
@@ -101,7 +101,7 @@ function obterUsuarioCabecalhoRequisicao() {
 }
 
 function definirBancoProjetoAtivo(nomeBanco) {
-  bancoProjetoAtivo = (nomeBanco || "teste").trim();
+  bancoProjetoAtivo = (nomeBanco || "EscritorioFabRaq").trim();
   localStorage.setItem(CHAVE_STORAGE_BANCO, bancoProjetoAtivo);
 }
 
