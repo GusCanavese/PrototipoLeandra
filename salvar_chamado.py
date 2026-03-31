@@ -225,7 +225,7 @@ def validar_banco_disponivel(nome_banco):
 
 
 def obter_banco_requisicao():
-    nome_banco = request.headers.get("X-Project-DB", "teste")
+    nome_banco = request.headers.get("X-Project-DB", "EscritorioRaqFab")
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
     try:
@@ -1729,7 +1729,7 @@ def tratar_erro_mysql(erro):
 async def api_projetos_listar():
     try:
         projetos = await executar_em_thread(listar_bancos_disponiveis)
-        return responder_json({"projetos": projetos, "padrao": "teste"})
+        return responder_json({"projetos": projetos, "padrao": "EscritorioRaqFab"})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
@@ -1939,7 +1939,7 @@ async def api_login():
     senha = (dados.get("senha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or "teste"
+        nome_banco = dados.get("banco") or "EscritorioRaqFab"
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
@@ -1977,7 +1977,7 @@ async def api_primeiro_acesso():
     nova_senha = (dados.get("novaSenha") or "").strip()
 
     try:
-        nome_banco = dados.get("banco") or "teste"
+        nome_banco = dados.get("banco") or "EscritorioRaqFab"
         valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
