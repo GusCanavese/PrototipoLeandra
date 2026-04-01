@@ -1586,6 +1586,7 @@ function registrarFormularioCriacao() {
   const campoParceriaCom = document.getElementById("campo-parceria-com");
   const campoCliente = document.getElementById("campo-cliente");
   const campoLoginCliente = document.getElementById("campo-login-cliente");
+  const listaSugestoesCliente = document.getElementById("sugestoes-cliente");
   const campoValorInicial = document.getElementById("campo-valor-inicial");
   const campoParcelasIniciais = document.getElementById("campo-parcelas-iniciais");
   const campoPrimeiraParcela = document.getElementById("campo-primeira-parcela");
@@ -1608,6 +1609,56 @@ function registrarFormularioCriacao() {
     }
   }
 
+  function preencherClienteSelecionado(clienteSelecionado) {
+    if (!clienteSelecionado) return;
+    campoCliente.value = clienteSelecionado.nomeCompleto || "";
+    campoLoginCliente.value = clienteSelecionado.login || "";
+    botaoCadastrarCliente?.classList.add("d-none");
+    if (alertaCriacao) {
+      alertaCriacao.className = "alert alert-success";
+      alertaCriacao.textContent = "Cliente encontrado. Você pode seguir com o chamado.";
+    }
+  }
+
+  function ocultarSugestoesCliente() {
+    if (!listaSugestoesCliente) return;
+    listaSugestoesCliente.classList.add("d-none");
+    listaSugestoesCliente.innerHTML = "";
+  }
+
+  function atualizarSugestoesCliente() {
+    if (usuarioEhCliente || !listaSugestoesCliente) return;
+    const termo = (campoCliente.value || "").trim().toLowerCase();
+    if (termo.length < 1) {
+      ocultarSugestoesCliente();
+      return;
+    }
+
+    const sugestoes = clientes
+      .filter((cliente) => {
+        const nome = (cliente.nomeCompleto || "").toLowerCase();
+        const login = (cliente.login || "").toLowerCase();
+        return nome.includes(termo) || login.includes(termo);
+      })
+      .slice(0, 6);
+
+    if (!sugestoes.length) {
+      ocultarSugestoesCliente();
+      return;
+    }
+
+    listaSugestoesCliente.innerHTML = sugestoes
+      .map(
+        (cliente) => `
+          <button type="button" class="list-group-item list-group-item-action" data-login-cliente="${escaparHtml(cliente.login || "")}">
+            ${escaparHtml(cliente.nomeCompleto || "")}
+            <small class="text-muted">(${escaparHtml(cliente.login || "")})</small>
+          </button>`,
+      )
+      .join("");
+    listaSugestoesCliente.classList.remove("d-none");
+  }
+
   function validarClienteExistente() {
     const loginInformado = campoLoginCliente.value.trim().toLowerCase();
     if (!loginInformado) {
@@ -1617,12 +1668,8 @@ function registrarFormularioCriacao() {
 
     const clienteEncontrado = obterClientePorLogin(loginInformado);
     if (clienteEncontrado) {
-      campoCliente.value = clienteEncontrado.nomeCompleto;
+      preencherClienteSelecionado(clienteEncontrado);
       botaoCadastrarCliente?.classList.add("d-none");
-      if (alertaCriacao) {
-        alertaCriacao.className = "alert alert-success";
-        alertaCriacao.textContent = "Cliente encontrado. Você pode seguir com o chamado.";
-      }
       return;
     }
 
@@ -1641,6 +1688,17 @@ function registrarFormularioCriacao() {
       alertaCriacao.className = "alert alert-info";
       alertaCriacao.textContent = "Informe os dados completos para abertura do chamado.";
     }
+  });
+  if (!usuarioEhCliente) campoCliente?.addEventListener("input", atualizarSugestoesCliente);
+  if (!usuarioEhCliente) campoCliente?.addEventListener("blur", () => setTimeout(ocultarSugestoesCliente, 150));
+  if (!usuarioEhCliente) campoCliente?.addEventListener("focus", atualizarSugestoesCliente);
+  if (!usuarioEhCliente) listaSugestoesCliente?.addEventListener("click", (evento) => {
+    const botaoSugestao = evento.target.closest("[data-login-cliente]");
+    if (!botaoSugestao) return;
+    const loginCliente = botaoSugestao.getAttribute("data-login-cliente");
+    const clienteSelecionado = obterClientePorLogin(loginCliente || "");
+    if (clienteSelecionado) preencherClienteSelecionado(clienteSelecionado);
+    ocultarSugestoesCliente();
   });
 
   semProcesso?.addEventListener("change", () => {
@@ -1828,7 +1886,7 @@ function registrarFormularioCadastroCliente() {
       tipo: tipoSelecionado,
     };
 
-    if (!novoUsuario.nomeCompleto || !novoUsuario.telefone || !novoUsuario.email || !novoUsuario.documento || !novoUsuario.login || !novoUsuario.senha) {
+    if (!novoUsuario.nomeCompleto || !novoUsuario.login || !novoUsuario.senha || !novoUsuario.tipo) {
       exibirAlertaCadastro("danger", "Preencha todos os campos obrigatórios antes de salvar.");
       return;
     }

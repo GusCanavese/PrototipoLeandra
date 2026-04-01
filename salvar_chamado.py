@@ -6,9 +6,11 @@ import hmac
 import hashlib
 import secrets
 import smtplib
+import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from email.message import EmailMessage
+from typing import Optional
 from queue import Empty, Queue
 from threading import Lock
 
@@ -23,22 +25,27 @@ from flask import Flask, jsonify, make_response, request
 from flask import send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
-host       = os.getenv("MYSQLHOST") or os.getenv("DB_HOST")
-port       = int(os.getenv("MYSQLPORT") or os.getenv("DB_PORT", 3306))
-user       = os.getenv("MYSQLUSER") or os.getenv("DB_USER")
-password   = os.getenv("MYSQLPASSWORD") or os.getenv("DB_PASSWORD")
+host       = os.getenv("DB_HOST", "hopper.proxy.rlwy.net")
+user       = os.getenv("DB_USER", "root")
+password   = os.getenv("DB_PASSWORD", "")
 db         = os.getenv("DB_NAME", "EscritorioFabRaq")
+port       = int(os.getenv("DB_PORT", 57072))
 nome_banco = db
 
 POOL_SIZE = 8
 DB_CACHE_TTL_MINUTOS = 2
+VALIDACAO_BANCO_TTL_SEGUNDOS = 30
 
 app = Flask(__name__)
 
 SISTEMA_DATABASES = {"information_schema", "mysql", "performance_schema", "sys"}
 bancos_cache = {"valores": [], "expira_em": datetime.min}
+validacao_bancos_cache = {}
+tabelas_atualizacoes_cache = {}
+usuarios_cache = {}
+chamados_cache = {}
+agenda_cache = {}
 rate_limit_cache = {}
-TABELA_ATUALIZACOES = "chamado_atualizacoes"
 
 _connection_lock = Lock()
 _pools = {}
@@ -51,9 +58,12 @@ PASSWORD_RESET_VALIDATE_LIMIT = 8
 PASSWORD_RESET_VALIDATE_WINDOW_SECONDS = 15 * 60
 PASSWORD_RESET_MAX_FAILED_ATTEMPTS = 5
 
+
+
 def criar_conexao(nome_banco=None):
     banco_destino = nome_banco or db
     return MySQLdb.connect(host=host, user=user, passwd=password, db=banco_destino, port=port, charset="utf8mb4")
+
 
 def obter_pool(nome_banco=None):
     chave = nome_banco or db
@@ -63,6 +73,8 @@ def obter_pool(nome_banco=None):
             dados_pool = {"fila": Queue(maxsize=POOL_SIZE), "criadas": 0}
             _pools[chave] = dados_pool
     return dados_pool
+
+
 
 @contextmanager
 def conexao_pool(nome_banco=None):
@@ -87,6 +99,13 @@ def conexao_pool(nome_banco=None):
                 raise RuntimeError("Pool de conexões esgotado. Tente novamente.") from erro
 
     try:
+        try:
+            conn.ping(True)
+        except (AttributeError, MySQLdb.Error):
+            _descartar_conexao_pool(chave, conn)
+            conn = criar_conexao(chave)
+            with _connection_lock:
+                dados_pool["criadas"] += 1
         yield conn
     except (MySQLdb.OperationalError, MySQLdb.InterfaceError) as erro:
         descartar_conexao = _erro_mysql_recuperavel(erro)
@@ -102,6 +121,7 @@ def conexao_pool(nome_banco=None):
         except Exception:
             _descartar_conexao_pool(chave, conn)
 
+
 def _erro_mysql_recuperavel(erro):
     mensagem = str(erro).lower()
     return any(
@@ -115,6 +135,7 @@ def _erro_mysql_recuperavel(erro):
         ]
     )
 
+
 def _descartar_conexao_pool(chave, conn):
     try:
         conn.close()
@@ -125,6 +146,7 @@ def _descartar_conexao_pool(chave, conn):
         if dados_pool:
             dados_pool["criadas"] = max(0, dados_pool["criadas"] - 1)
 
+
 def _executar_com_retry(nome_banco, operacao):
     for tentativa in range(2):
         with conexao_pool(nome_banco) as conn:
@@ -134,16 +156,19 @@ def _executar_com_retry(nome_banco, operacao):
                 if tentativa == 1 or not _erro_mysql_recuperavel(erro):
                     raise
 
+
 def aplicar_headers_cors(resposta):
     resposta.headers["Access-Control-Allow-Origin"] = "*"
     resposta.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Project-DB"
     resposta.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
     return resposta
 
+
 def responder_json(payload, status=200):
     resposta = jsonify(payload)
     resposta.status_code = status
     return aplicar_headers_cors(resposta)
+
 
 @app.before_request
 def responder_preflight_options():
@@ -165,8 +190,10 @@ def servir_arquivos(nome_arquivo):
 def garantir_cors_global(resposta):
     return aplicar_headers_cors(resposta)
 
+
 def nome_banco_valido(nome_banco):
     return bool(re.fullmatch(r"[A-Za-z0-9_]+", nome_banco or ""))
+
 
 def listar_bancos_disponiveis():
     if datetime.now() < bancos_cache["expira_em"] and bancos_cache["valores"]:
@@ -182,14 +209,37 @@ def listar_bancos_disponiveis():
     bancos_cache["expira_em"] = datetime.now() + timedelta(minutes=DB_CACHE_TTL_MINUTOS)
     return bancos
 
+
+
+
+def validar_banco_disponivel(nome_banco):
+    agora = datetime.now()
+    expira_em: Optional[datetime] = validacao_bancos_cache.get(nome_banco)
+    if expira_em and agora < expira_em:
+        return
+
+    with conexao_pool(nome_banco):
+        pass
+
+    validacao_bancos_cache[nome_banco] = agora + timedelta(seconds=VALIDACAO_BANCO_TTL_SEGUNDOS)
+
+
 def obter_banco_requisicao():
     nome_banco = request.headers.get("X-Project-DB", "EscritorioFabRaq")
     if not nome_banco_valido(nome_banco):
         raise ValueError("Nome de banco inválido.")
+    try:
+        validar_banco_disponivel(nome_banco)
+    except RuntimeError as erro:
+        raise ValueError(str(erro)) from erro
+    except (MySQLdb.OperationalError, MySQLdb.ProgrammingError) as erro:
+        raise ValueError(f"Banco '{nome_banco}' não encontrado.") from erro
     return nome_banco
+
 
 def normalizar_email(email):
     return (email or "").strip().lower()
+
 
 def hash_senha(senha):
     if not senha:
@@ -198,8 +248,10 @@ def hash_senha(senha):
         raise ValueError("A senha deve ter pelo menos 8 caracteres.")
     return generate_password_hash(senha)
 
+
 def senha_usa_hash(valor):
     return isinstance(valor, str) and valor.startswith(("scrypt:", "pbkdf2:"))
+
 
 def verificar_senha(senha_informada, senha_salva):
     if not senha_informada or not senha_salva:
@@ -211,14 +263,18 @@ def verificar_senha(senha_informada, senha_salva):
             return False
     return hmac.compare_digest(str(senha_salva), str(senha_informada))
 
+
 def token_hash(valor):
     return hashlib.sha256((valor or "").encode("utf-8")).hexdigest()
+
 
 def gerar_codigo_reset():
     return f"{secrets.randbelow(1000000):06d}"
 
+
 def gerar_token_sessao_reset():
     return secrets.token_urlsafe(32)
+
 
 def obter_ip_requisicao():
     cabecalho = (request.headers.get("X-Forwarded-For") or "").strip()
@@ -226,23 +282,10 @@ def obter_ip_requisicao():
         return cabecalho.split(",")[0].strip()
     return (request.remote_addr or "desconhecido").strip() or "desconhecido"
 
+
 def aplicar_rate_limit(chave, limite, janela_segundos):
     agora = datetime.now()
     with _rate_limit_lock:
-        chaves_expiradas = []
-        for chave_cache, instantes in list(rate_limit_cache.items()):
-            instantes_validos = [
-                instante
-                for instante in instantes
-                if (agora - instante).total_seconds() < janela_segundos
-            ]
-            if instantes_validos:
-                rate_limit_cache[chave_cache] = instantes_validos
-            else:
-                chaves_expiradas.append(chave_cache)
-        for chave_expirada in chaves_expiradas:
-            rate_limit_cache.pop(chave_expirada, None)
-
         entradas = [
             instante
             for instante in rate_limit_cache.get(chave, [])
@@ -254,15 +297,18 @@ def aplicar_rate_limit(chave, limite, janela_segundos):
         entradas.append(agora)
         rate_limit_cache[chave] = entradas
 
+
 def limitar_solicitacao_reset(email):
     chave_email = hashlib.sha256(normalizar_email(email).encode("utf-8")).hexdigest()
     chave = f"pwd-reset:request:{obter_ip_requisicao()}:{chave_email}"
     aplicar_rate_limit(chave, PASSWORD_RESET_REQUEST_LIMIT, PASSWORD_RESET_REQUEST_WINDOW_SECONDS)
 
+
 def limitar_validacao_reset(email):
     chave_email = hashlib.sha256(normalizar_email(email).encode("utf-8")).hexdigest()
     chave = f"pwd-reset:validate:{obter_ip_requisicao()}:{chave_email}"
     aplicar_rate_limit(chave, PASSWORD_RESET_VALIDATE_LIMIT, PASSWORD_RESET_VALIDATE_WINDOW_SECONDS)
+
 
 def obter_config_email():
     host_email = (os.getenv("SMTP_HOST") or "").strip()
@@ -284,6 +330,7 @@ def obter_config_email():
         "use_tls": usar_tls and not usar_ssl,
         "suppress_send": suppress,
     }
+
 
 def enviar_email_codigo_reset(destinatario, codigo):
     config = obter_config_email()
@@ -335,59 +382,70 @@ def normalizar_anexos(anexos):
             return []
     return anexos
 
+
 def normalizar_financeiro(financeiro):
     if not financeiro:
         return []
-    try:
-        dados = json.loads(financeiro) if isinstance(financeiro, str) else financeiro
-    except json.JSONDecodeError:
-        return []
+    if isinstance(financeiro, str):
+        try:
+            dados = json.loads(financeiro)
+        except json.JSONDecodeError:
+            return []
+    else:
+        dados = financeiro
 
     if not isinstance(dados, list):
         return []
 
-    def para_int(valor, padrao=1):
-        try:
-            return max(1, int(valor))
-        except (TypeError, ValueError):
-            return padrao
-
-    def para_float(valor, padrao=0.0):
-        try:
-            return float(valor)
-        except (TypeError, ValueError):
-            return padrao
-
-    def normalizar_item(indice, item):
+    itens_normalizados = []
+    for indice, item in enumerate(dados):
         if not isinstance(item, dict):
-            return None
+            continue
+        parcelas = item.get("installments", item.get("parcelas", 1))
+        try:
+            parcelas = max(1, int(parcelas))
+        except (TypeError, ValueError):
+            parcelas = 1
+        valor = item.get("value", item.get("valor", 0))
+        try:
+            valor = float(valor)
+        except (TypeError, ValueError):
+            valor = 0.0
+        parcelas_pagas = item.get("paidInstallments", item.get("parcelasPagas", []))
+        if not isinstance(parcelas_pagas, list):
+            parcelas_pagas = []
+        parcelas_pagas = [bool(parcelas_pagas[i]) if i < len(parcelas_pagas) else False for i in range(parcelas)]
+        datas_parcelas = item.get("installmentDates", item.get("datasParcelas", []))
+        if not isinstance(datas_parcelas, list):
+            datas_parcelas = []
+        datas_parcelas = [str(datas_parcelas[i]).strip() if i < len(datas_parcelas) and datas_parcelas[i] else "" for i in range(parcelas)]
         produto = str(item.get("product", item.get("produto", "")) or "").strip()
         if not produto:
-            return None
-        parcelas = para_int(item.get("installments", item.get("parcelas", 1)))
-        parcelas_pagas = item.get("paidInstallments", item.get("parcelasPagas", []))
-        datas_parcelas = item.get("installmentDates", item.get("datasParcelas", []))
-        parcelas_pagas = parcelas_pagas if isinstance(parcelas_pagas, list) else []
-        datas_parcelas = datas_parcelas if isinstance(datas_parcelas, list) else []
-        return {
-            "id": item.get("id") or f"financeiro-{indice}",
-            "product": produto,
-            "value": para_float(item.get("value", item.get("valor", 0))),
-            "installments": parcelas,
-            "description": str(item.get("description", item.get("descricao", "")) or "").strip(),
-            "paidInstallments": [bool(parcelas_pagas[i]) if i < len(parcelas_pagas) else False for i in range(parcelas)],
-            "installmentDates": [str(datas_parcelas[i]).strip() if i < len(datas_parcelas) and datas_parcelas[i] else "" for i in range(parcelas)],
-        }
+            continue
+        itens_normalizados.append(
+            {
+                "id": item.get("id") or f"financeiro-{indice}",
+                "product": produto,
+                "value": valor,
+                "installments": parcelas,
+                "description": str(item.get("description", item.get("descricao", "")) or "").strip(),
+                "paidInstallments": parcelas_pagas,
+                "installmentDates": datas_parcelas,
+            }
+        )
+    return itens_normalizados
 
-    return [item for indice, bruto in enumerate(dados) if (item := normalizar_item(indice, bruto))]
 
 def normalizar_evento_financeiro(evento):
     if not evento:
         return None
-    try:
-        dados = json.loads(evento) if isinstance(evento, str) else evento
-    except json.JSONDecodeError:
-        return None
+    if isinstance(evento, str):
+        try:
+            dados = json.loads(evento)
+        except json.JSONDecodeError:
+            return None
+    else:
+        dados = evento
 
     if not isinstance(dados, dict):
         return None
@@ -417,6 +475,7 @@ def normalizar_evento_financeiro(evento):
         "installments": parcelas,
     }
 
+
 def atualizacao_financeira_placeholder(atualizacao):
     if not isinstance(atualizacao, dict):
         return False
@@ -430,6 +489,279 @@ def atualizacao_financeira_placeholder(atualizacao):
         and not anexos
         and evento is None
     )
+
+
+def resolver_tabela_atualizacoes(conn):
+    cursor = conn.cursor()
+    try:
+        for nome_tabela in ("chamados_atualizacoes", "chamado_atualizacoes"):
+            cursor.execute("SHOW TABLES LIKE %s", (nome_tabela,))
+            if cursor.fetchone():
+                return nome_tabela
+    finally:
+        cursor.close()
+    return "chamado_atualizacoes"
+
+
+def garantir_colunas_financeiras(conn, tabela_atualizacoes):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            f"""
+            SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME IN ('financeiro_cliente', 'financeiro_escritorio', 'financeiro_evento')
+            """,
+            (banco_atual, tabela_atualizacoes),
+        )
+        colunas_existentes = {
+            linha[0]: {
+                "tipo": (linha[1] or "").lower(),
+                "tamanho": linha[2],
+            }
+            for linha in cursor.fetchall()
+        }
+        if "financeiro_cliente" not in colunas_existentes:
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_cliente LONGTEXT NULL")
+        elif colunas_existentes["financeiro_cliente"]["tipo"] != "longtext":
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_cliente LONGTEXT NULL")
+        if "financeiro_escritorio" not in colunas_existentes:
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_escritorio LONGTEXT NULL")
+        elif colunas_existentes["financeiro_escritorio"]["tipo"] != "longtext":
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_escritorio LONGTEXT NULL")
+        if "financeiro_evento" not in colunas_existentes:
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} ADD COLUMN financeiro_evento LONGTEXT NULL")
+        elif colunas_existentes["financeiro_evento"]["tipo"] != "longtext":
+            cursor.execute(f"ALTER TABLE {tabela_atualizacoes} MODIFY COLUMN financeiro_evento LONGTEXT NULL")
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_atualizacoes(nome_banco):
+    agora = datetime.now()
+    cache = tabelas_atualizacoes_cache.get(nome_banco)
+    if cache and agora < cache["expira_em"]:
+        return cache["tabela"]
+
+    def operacao(conn):
+        tabela_atualizacoes = resolver_tabela_atualizacoes(conn)
+        garantir_colunas_financeiras(conn, tabela_atualizacoes)
+        return tabela_atualizacoes
+
+    tabela = _executar_com_retry(nome_banco, operacao)
+    tabelas_atualizacoes_cache[nome_banco] = {
+        "tabela": tabela,
+        "expira_em": agora + timedelta(minutes=10),
+    }
+    return tabela
+
+
+def preparar_tabela_atualizacoes_em_conexao(nome_banco, conn):
+    agora = datetime.now()
+    cache = tabelas_atualizacoes_cache.get(nome_banco)
+    if cache and agora < cache["expira_em"]:
+        return cache["tabela"]
+
+    tabela = resolver_tabela_atualizacoes(conn)
+    garantir_colunas_financeiras(conn, tabela)
+    tabelas_atualizacoes_cache[nome_banco] = {
+        "tabela": tabela,
+        "expira_em": agora + timedelta(minutes=10),
+    }
+    return tabela
+
+
+def garantir_coluna_primeiro_acesso(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'usuarios'
+              AND COLUMN_NAME = 'primeiro_acesso'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE usuarios
+                ADD COLUMN primeiro_acesso TINYINT(1) NOT NULL DEFAULT 0
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def garantir_coluna_email(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'usuarios'
+              AND COLUMN_NAME = 'email'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE usuarios
+                ADD COLUMN email VARCHAR(255) NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def garantir_tabela_reset_senha(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                usuario_login VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                token_hash CHAR(64) NOT NULL,
+                reset_session_hash CHAR(64) NULL,
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                used_at DATETIME NULL,
+                validation_failures INT NOT NULL DEFAULT 0,
+                request_ip VARCHAR(64) NULL,
+                INDEX idx_password_reset_email (email),
+                INDEX idx_password_reset_usuario (usuario_login),
+                INDEX idx_password_reset_expires (expires_at)
+            )
+            """
+        )
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_usuarios(nome_banco):
+    agora = datetime.now()
+    cache = usuarios_cache.get(nome_banco)
+    if cache and agora < cache:
+        return
+
+    def operacao(conn):
+        garantir_coluna_primeiro_acesso(conn)
+        garantir_coluna_email(conn)
+        garantir_tabela_reset_senha(conn)
+
+    _executar_com_retry(nome_banco, operacao)
+    usuarios_cache[nome_banco] = agora + timedelta(minutes=10)
+
+
+def garantir_coluna_criador_chamado(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'chamados'
+              AND COLUMN_NAME = 'usuario_criador'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE chamados
+                ADD COLUMN usuario_criador VARCHAR(255) NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def garantir_coluna_anotacoes(conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        banco_atual = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'chamados'
+              AND COLUMN_NAME = 'anotacoes'
+            """,
+            (banco_atual,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                """
+                ALTER TABLE chamados
+                ADD COLUMN anotacoes LONGTEXT NULL
+                """
+            )
+    finally:
+        cursor.close()
+
+
+def preparar_tabela_chamados(nome_banco):
+    agora = datetime.now()
+    cache = chamados_cache.get(nome_banco)
+    if cache and agora < cache:
+        return
+
+    def operacao(conn):
+        garantir_coluna_criador_chamado(conn)
+        garantir_coluna_anotacoes(conn)
+
+    _executar_com_retry(nome_banco, operacao)
+    chamados_cache[nome_banco] = agora + timedelta(minutes=10)
+
+
+def preparar_tabela_agenda(nome_banco):
+    agora = datetime.now()
+    cache = agenda_cache.get(nome_banco)
+    if cache and agora < cache:
+        return
+
+    def operacao(conn):
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agenda_compromissos (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                usuario_login VARCHAR(255) NOT NULL,
+                titulo VARCHAR(255) NOT NULL,
+                dia DATE NOT NULL,
+                hora_inicio TIME NOT NULL,
+                duracao_minutos INT NOT NULL,
+                criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_agenda_usuario_dia (usuario_login, dia)
+            )
+            """
+        )
+        cursor.close()
+
+    _executar_com_retry(nome_banco, operacao)
+    agenda_cache[nome_banco] = agora + timedelta(minutes=10)
+
 
 def validar_compromisso_agenda(compromisso):
     titulo = (compromisso.get("titulo") or "").strip()
@@ -470,7 +802,9 @@ def validar_compromisso_agenda(compromisso):
         "duracao_minutos": duracao_minutos,
     }
 
+
 def listar_compromissos_semana(nome_banco, usuario_login, inicio_semana, fim_semana):
+    preparar_tabela_agenda(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
     compromissos = executar_select(
         nome_banco,
@@ -486,7 +820,9 @@ def listar_compromissos_semana(nome_banco, usuario_login, inicio_semana, fim_sem
     )
     return compromissos
 
+
 def inserir_compromisso_agenda(nome_banco, usuario_login, dados):
+    preparar_tabela_agenda(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
     compromisso = validar_compromisso_agenda(dados or {})
 
@@ -523,7 +859,9 @@ def inserir_compromisso_agenda(nome_banco, usuario_login, dados):
 
     return _executar_com_retry(nome_banco, operacao)
 
+
 def atualizar_compromisso_agenda(nome_banco, usuario_login, compromisso_id, dados):
+    preparar_tabela_agenda(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
     compromisso = validar_compromisso_agenda(dados or {})
 
@@ -570,7 +908,9 @@ def atualizar_compromisso_agenda(nome_banco, usuario_login, compromisso_id, dado
 
     return _executar_com_retry(nome_banco, operacao)
 
+
 def excluir_compromisso_agenda(nome_banco, usuario_login, compromisso_id):
+    preparar_tabela_agenda(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
 
     def operacao(conn):
@@ -594,6 +934,7 @@ def excluir_compromisso_agenda(nome_banco, usuario_login, compromisso_id):
 def normalizar_usuario_login(valor):
     return (valor or "").strip().lower()
 
+
 def obter_usuario_autenticado_requisicao():
     usuario_header = request.headers.get("X-Auth-User", "")
     usuario = normalizar_usuario_login(usuario_header)
@@ -601,8 +942,10 @@ def obter_usuario_autenticado_requisicao():
         raise ValueError("Usuário autenticado não informado.")
     return usuario
 
+
 def obter_contexto_usuario_requisicao(nome_banco):
     usuario = obter_usuario_autenticado_requisicao()
+    preparar_tabela_usuarios(nome_banco)
     registro = executar_select(
         nome_banco,
         """
@@ -628,10 +971,12 @@ def normalizar_tipo_usuario(tipo):
         return "Advogado"
     return tipo_limpo
 
+
 def parceiro_valido(nome_banco, parceiro_login):
     parceiro = normalizar_usuario_login(parceiro_login)
     if not parceiro:
         return ""
+    preparar_tabela_usuarios(nome_banco)
     registro = executar_select(
         nome_banco,
         """
@@ -645,6 +990,7 @@ def parceiro_valido(nome_banco, parceiro_login):
     )
     return parceiro if registro else ""
 
+
 def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     if valor is None or valor == "":
         return padrao
@@ -655,6 +1001,11 @@ def parse_int_param(valor, padrao=None, minimo=1, maximo=1000):
     if numero < minimo or numero > maximo:
         raise ValueError(f"Parâmetro deve estar entre {minimo} e {maximo}.")
     return numero
+
+
+async def executar_em_thread(funcao, *args, **kwargs):
+    return await asyncio.to_thread(funcao, *args, **kwargs)
+
 
 def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=True):
     def operacao(conn):
@@ -668,6 +1019,7 @@ def executar_select(nome_banco, sql, params=None, fetch_one=False, dict_cursor=T
 
     return _executar_com_retry(nome_banco, operacao)
 
+
 def executar_write(nome_banco, sql, params=None):
     def operacao(conn):
         cursor = conn.cursor()
@@ -676,6 +1028,7 @@ def executar_write(nome_banco, sql, params=None):
         cursor.close()
 
     _executar_com_retry(nome_banco, operacao)
+
 
 def executar_transacao(nome_banco, callback):
     def operacao(conn):
@@ -688,7 +1041,9 @@ def executar_transacao(nome_banco, callback):
 
     _executar_com_retry(nome_banco, operacao)
 
+
 def listar_clientes(nome_banco):
+    preparar_tabela_usuarios(nome_banco)
     registros = executar_select(
         nome_banco,
         """
@@ -709,7 +1064,9 @@ def listar_clientes(nome_banco):
         for r in registros
     ]
 
+
 def substituir_clientes(nome_banco, clientes):
+    preparar_tabela_usuarios(nome_banco)
     def transacao(conn):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM usuarios WHERE tipo = 'Cliente'")
@@ -733,8 +1090,17 @@ def substituir_clientes(nome_banco, clientes):
 
     executar_transacao(nome_banco, transacao)
 
+
 def inserir_cliente(nome_banco, cliente):
-    tipo = cliente.get("tipo") or "Cliente"
+    preparar_tabela_usuarios(nome_banco)
+    nome_completo = (cliente.get("nomeCompleto") or "").strip()
+    login = (cliente.get("login") or "").strip().lower()
+    senha = (cliente.get("senha") or "").strip()
+    tipo = (cliente.get("tipo") or "").strip() or "Cliente"
+
+    if not nome_completo or not login or not senha or not tipo:
+        raise ValueError("Nome completo, login, senha e tipo de usuário são obrigatórios.")
+
     if tipo == "Técnico":
         tipo = "Advogado"
     if tipo not in {"Cliente", "Advogado", "Administrador"}:
@@ -747,10 +1113,10 @@ def inserir_cliente(nome_banco, cliente):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
-            cliente["login"],
-            hash_senha(cliente["senha"]),
+            login,
+            hash_senha(senha),
             tipo,
-            cliente.get("nomeCompleto") or None,
+            nome_completo,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
             normalizar_email(cliente.get("email")) or None,
@@ -758,7 +1124,9 @@ def inserir_cliente(nome_banco, cliente):
         ),
     )
 
+
 def trocar_senha_primeiro_acesso(nome_banco, usuario, senha_atual, nova_senha):
+    preparar_tabela_usuarios(nome_banco)
     registro = executar_select(
         nome_banco,
         """
@@ -798,7 +1166,10 @@ def trocar_senha_primeiro_acesso(nome_banco, usuario, senha_atual, nova_senha):
         "tipo": tipo,
     }
 
+
+
 def buscar_usuario_por_email(nome_banco, email):
+    preparar_tabela_usuarios(nome_banco)
     return executar_select(
         nome_banco,
         """
@@ -812,7 +1183,9 @@ def buscar_usuario_por_email(nome_banco, email):
         fetch_one=True,
     )
 
+
 def solicitar_reset_senha(nome_banco, email, request_ip):
+    preparar_tabela_usuarios(nome_banco)
     email_normalizado = normalizar_email(email)
     if not email_normalizado:
         raise ValueError("Informe um e-mail válido.")
@@ -866,7 +1239,9 @@ def solicitar_reset_senha(nome_banco, email, request_ip):
 
     return {"ok": True, "mensagem": "código enviado"}
 
+
 def validar_codigo_reset_senha(nome_banco, email, codigo):
+    preparar_tabela_usuarios(nome_banco)
     email_normalizado = normalizar_email(email)
     codigo_normalizado = re.sub(r"\D", "", codigo or "")
     if not email_normalizado or len(codigo_normalizado) != 6:
@@ -920,7 +1295,9 @@ def validar_codigo_reset_senha(nome_banco, email, codigo):
 
     return {"resetToken": reset_token, "email": email_normalizado}
 
+
 def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
+    preparar_tabela_usuarios(nome_banco)
     email_normalizado = normalizar_email(email)
     if not email_normalizado or not reset_token:
         raise ValueError("Sessão de redefinição inválida.")
@@ -971,7 +1348,9 @@ def redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha):
     executar_transacao(nome_banco, transacao)
     return {"ok": True}
 
+
 def listar_chamados(nome_banco, usuario_login, tipo_usuario, limite=50, offset=0):
+    preparar_tabela_chamados(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
     filtro_cliente = normalizar_tipo_usuario(tipo_usuario) == "Cliente"
     sql = """
@@ -1012,8 +1391,10 @@ def listar_chamados(nome_banco, usuario_login, tipo_usuario, limite=50, offset=0
         for c in chamados
     ]
 
+
 def obter_chamado_detalhe(nome_banco, id_chamado, usuario_login, tipo_usuario):
-    tabela_atualizacoes = TABELA_ATUALIZACOES
+    tabela_atualizacoes = preparar_tabela_atualizacoes(nome_banco)
+    preparar_tabela_chamados(nome_banco)
     usuario = normalizar_usuario_login(usuario_login)
     filtro_cliente = normalizar_tipo_usuario(tipo_usuario) == "Cliente"
     sql = """
@@ -1082,10 +1463,11 @@ def obter_chamado_detalhe(nome_banco, id_chamado, usuario_login, tipo_usuario):
         ],
     }
 
+
 def substituir_chamados(nome_banco, chamados):
     def transacao(conn):
         cursor = conn.cursor()
-        tabela_atualizacoes = TABELA_ATUALIZACOES
+        tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
         cursor.execute(f"DELETE FROM {tabela_atualizacoes}")
         cursor.execute("DELETE FROM chamados")
 
@@ -1141,11 +1523,13 @@ def substituir_chamados(nome_banco, chamados):
 
     executar_transacao(nome_banco, transacao)
 
+
 def salvar_chamado_individual(nome_banco, chamado, usuario_login):
     chamado_normalizado = dict(chamado or {})
     chamado_normalizado["createdBy"] = normalizar_usuario_login(chamado_normalizado.get("createdBy") or usuario_login)
     chamado_normalizado["financialClient"] = normalizar_financeiro(chamado_normalizado.get("financialClient", []))
     chamado_normalizado["financialOffice"] = normalizar_financeiro(chamado_normalizado.get("financialOffice", []))
+    preparar_tabela_chamados(nome_banco)
 
     parceiro_login = ""
     if chamado_normalizado.get("hasPartnership"):
@@ -1157,17 +1541,16 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_login):
 
     def transacao(conn):
         cursor = conn.cursor()
-        tabela_atualizacoes = TABELA_ATUALIZACOES
+        tabela_atualizacoes = preparar_tabela_atualizacoes_em_conexao(nome_banco, conn)
 
         id_chamado = (chamado_normalizado.get("id") or "").strip()
         if not id_chamado:
-            # TODO: Substituir por AUTO_INCREMENT no banco de dados.
             cursor.execute(
                 """
                 SELECT id_chamado
                 FROM chamados
-                WHERE id_chamado LIKE 'C-%'
-                ORDER BY LENGTH(id_chamado) DESC, id_chamado DESC
+                WHERE id_chamado REGEXP '^C-[0-9]+$'
+                ORDER BY CAST(SUBSTRING(id_chamado, 3) AS UNSIGNED) DESC
                 LIMIT 1
                 """
             )
@@ -1312,10 +1695,13 @@ def salvar_chamado_individual(nome_banco, chamado, usuario_login):
     executar_transacao(nome_banco, transacao)
     return chamado_normalizado
 
+
 def excluir_chamado(nome_banco, id_chamado):
     executar_write(nome_banco, "DELETE FROM chamados WHERE id_chamado = %s", (id_chamado,))
-    
+
+
 def autenticar_usuario(nome_banco, usuario, senha):
+    preparar_tabela_usuarios(nome_banco)
     identificador = normalizar_email(usuario)
     registro = executar_select(
         nome_banco,
@@ -1345,50 +1731,56 @@ def autenticar_usuario(nome_banco, usuario, senha):
 def tratar_erro_mysql(erro):
     return responder_json({"ok": False, "erro": f"Erro de banco de dados: {erro}"}, 500)
 
+
 @app.route("/api/projetos", methods=["GET"])
-def api_projetos_listar():
+async def api_projetos_listar():
     try:
-        projetos = listar_bancos_disponiveis()
+        projetos = await executar_em_thread(listar_bancos_disponiveis)
         return responder_json({"projetos": projetos, "padrao": "EscritorioFabRaq"})
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
+
 @app.route("/api/clientes", methods=["GET"])
-def api_clientes_listar():
+async def api_clientes_listar():
     try:
         nome_banco = obter_banco_requisicao()
-        clientes = listar_clientes(nome_banco)
+        clientes = await executar_em_thread(listar_clientes, nome_banco)
         return responder_json(clientes)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/clientes", methods=["PUT"])
-def api_clientes_substituir():
+async def api_clientes_substituir():
     try:
         nome_banco = obter_banco_requisicao()
         clientes = request.json or []
-        substituir_clientes(nome_banco, clientes)
+        await executar_em_thread(substituir_clientes, nome_banco, clientes)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/clientes", methods=["POST"])
-def api_cliente_inserir():
+async def api_cliente_inserir():
     try:
         nome_banco = obter_banco_requisicao()
-        inserir_cliente(nome_banco, request.json or {})
+        await executar_em_thread(inserir_cliente, nome_banco, request.json or {})
         return responder_json({"ok": True}, 201)
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/chamados", methods=["GET"])
-def api_chamados_listar():
+async def api_chamados_listar():
     try:
         nome_banco = obter_banco_requisicao()
-        contexto_usuario = obter_contexto_usuario_requisicao(nome_banco)
+        contexto_usuario = await executar_em_thread(obter_contexto_usuario_requisicao, nome_banco)
         limite = parse_int_param(request.args.get("limit"), padrao=50, minimo=1, maximo=200)
         offset = parse_int_param(request.args.get("offset"), padrao=0, minimo=0, maximo=1000000)
-        chamados = listar_chamados(
+        chamados = await executar_em_thread(
+            listar_chamados,
             nome_banco,
             contexto_usuario["login"],
             contexto_usuario["tipo"],
@@ -1399,12 +1791,14 @@ def api_chamados_listar():
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/chamados/<id_chamado>", methods=["GET"])
-def api_chamado_detalhar(id_chamado):
+async def api_chamado_detalhar(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
-        contexto_usuario = obter_contexto_usuario_requisicao(nome_banco)
-        chamado = obter_chamado_detalhe(
+        contexto_usuario = await executar_em_thread(obter_contexto_usuario_requisicao, nome_banco)
+        chamado = await executar_em_thread(
+            obter_chamado_detalhe,
             nome_banco,
             id_chamado,
             contexto_usuario["login"],
@@ -1416,49 +1810,54 @@ def api_chamado_detalhar(id_chamado):
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/chamados", methods=["PUT"])
-def api_chamados_substituir():
+async def api_chamados_substituir():
     try:
         nome_banco = obter_banco_requisicao()
-        substituir_chamados(nome_banco, request.json or [])
+        await executar_em_thread(substituir_chamados, nome_banco, request.json or [])
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/chamados", methods=["POST"])
-def api_chamado_inserir():
+async def api_chamado_inserir():
     try:
         nome_banco = obter_banco_requisicao()
         usuario_requisicao = obter_usuario_autenticado_requisicao()
-        chamado_salvo = salvar_chamado_individual(nome_banco, request.json or {}, usuario_requisicao)
+        chamado_salvo = await executar_em_thread(salvar_chamado_individual, nome_banco, request.json or {}, usuario_requisicao)
         return responder_json({"ok": True, "chamado": chamado_salvo}, 201)
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/chamados/<id_chamado>", methods=["PUT"])
-def api_chamado_atualizar(id_chamado):
+async def api_chamado_atualizar(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
         usuario_requisicao = obter_usuario_autenticado_requisicao()
         chamado = request.json or {}
         if not chamado.get("id"):
             chamado["id"] = id_chamado
-        salvar_chamado_individual(nome_banco, chamado, usuario_requisicao)
+        await executar_em_thread(salvar_chamado_individual, nome_banco, chamado, usuario_requisicao)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
+
 
 @app.route("/api/chamados/<id_chamado>", methods=["DELETE"])
-def api_chamado_remover(id_chamado):
+async def api_chamado_remover(id_chamado):
     try:
         nome_banco = obter_banco_requisicao()
-        excluir_chamado(nome_banco, id_chamado)
+        await executar_em_thread(excluir_chamado, nome_banco, id_chamado)
         return responder_json({"ok": True})
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/agenda/compromissos", methods=["GET"])
-def api_agenda_listar():
+async def api_agenda_listar():
     try:
         nome_banco = obter_banco_requisicao()
         usuario_requisicao = obter_usuario_autenticado_requisicao()
@@ -1467,7 +1866,8 @@ def api_agenda_listar():
             raise ValueError("Parâmetro inicio_semana é obrigatório.")
         data_inicio = datetime.strptime(inicio_semana, "%Y-%m-%d").date()
         data_fim = data_inicio + timedelta(days=6)
-        compromissos = listar_compromissos_semana(
+        compromissos = await executar_em_thread(
+            listar_compromissos_semana,
             nome_banco,
             usuario_requisicao,
             data_inicio.strftime("%Y-%m-%d"),
@@ -1485,12 +1885,14 @@ def api_agenda_listar():
     except RuntimeError as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 500)
 
+
 @app.route("/api/agenda/compromissos", methods=["POST"])
-def api_agenda_criar():
+async def api_agenda_criar():
     try:
         nome_banco = obter_banco_requisicao()
         usuario_requisicao = obter_usuario_autenticado_requisicao()
-        compromisso = inserir_compromisso_agenda(
+        compromisso = await executar_em_thread(
+            inserir_compromisso_agenda,
             nome_banco,
             usuario_requisicao,
             request.json or {},
@@ -1499,12 +1901,14 @@ def api_agenda_criar():
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/agenda/compromissos/<int:compromisso_id>", methods=["PUT"])
-def api_agenda_atualizar(compromisso_id):
+async def api_agenda_atualizar(compromisso_id):
     try:
         nome_banco = obter_banco_requisicao()
         usuario_requisicao = obter_usuario_autenticado_requisicao()
-        compromisso = atualizar_compromisso_agenda(
+        compromisso = await executar_em_thread(
+            atualizar_compromisso_agenda,
             nome_banco,
             usuario_requisicao,
             compromisso_id,
@@ -1516,12 +1920,14 @@ def api_agenda_atualizar(compromisso_id):
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/agenda/compromissos/<int:compromisso_id>", methods=["DELETE"])
-def api_agenda_excluir(compromisso_id):
+async def api_agenda_excluir(compromisso_id):
     try:
         nome_banco = obter_banco_requisicao()
         usuario_requisicao = obter_usuario_autenticado_requisicao()
-        removidos = excluir_compromisso_agenda(
+        removidos = await executar_em_thread(
+            excluir_compromisso_agenda,
             nome_banco,
             usuario_requisicao,
             compromisso_id,
@@ -1532,22 +1938,23 @@ def api_agenda_excluir(compromisso_id):
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/login", methods=["POST"])
-def api_login():
+async def api_login():
     dados = request.json or {}
     usuario = (dados.get("usuario") or "").strip()
     senha = (dados.get("senha") or "").strip()
 
     try:
         nome_banco = dados.get("banco") or "EscritorioFabRaq"
-        valido = nome_banco_valido(nome_banco)
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
     except (ValueError, RuntimeError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
     try:
-        autenticado = autenticar_usuario(nome_banco, usuario, senha)
+        autenticado = await executar_em_thread(autenticar_usuario, nome_banco, usuario, senha)
     except (MySQLdb.OperationalError, MySQLdb.ProgrammingError):
         return responder_json({"ok": False, "erro": f"Banco '{nome_banco}' não encontrado."}, 400)
     if not autenticado:
@@ -1568,8 +1975,9 @@ def api_login():
         }
     )
 
+
 @app.route("/api/usuarios/primeiro-acesso", methods=["POST"])
-def api_primeiro_acesso():
+async def api_primeiro_acesso():
     dados = request.json or {}
     usuario = (dados.get("usuario") or "").strip()
     senha_atual = (dados.get("senhaAtual") or "").strip()
@@ -1577,10 +1985,11 @@ def api_primeiro_acesso():
 
     try:
         nome_banco = dados.get("banco") or "EscritorioFabRaq"
-        valido = nome_banco_valido(nome_banco)
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
-        resultado = trocar_senha_primeiro_acesso(
+        resultado = await executar_em_thread(
+            trocar_senha_primeiro_acesso,
             nome_banco,
             usuario,
             senha_atual,
@@ -1600,18 +2009,19 @@ def api_primeiro_acesso():
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/usuarios/esqueci-senha/solicitar", methods=["POST"])
-def api_esqueci_senha_solicitar():
+async def api_esqueci_senha_solicitar():
     dados = request.json or {}
     email = normalizar_email(dados.get("email"))
 
     try:
         nome_banco = dados.get("banco") or obter_banco_requisicao()
-        valido = nome_banco_valido(nome_banco)
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
         limitar_solicitacao_reset(email)
-        resposta = solicitar_reset_senha(nome_banco, email, obter_ip_requisicao())
+        resposta = await executar_em_thread(solicitar_reset_senha, nome_banco, email, obter_ip_requisicao())
         resposta["banco"] = nome_banco
         return responder_json(resposta)
     except ValueError as erro:
@@ -1620,19 +2030,20 @@ def api_esqueci_senha_solicitar():
     except (RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/usuarios/esqueci-senha/validar", methods=["POST"])
-def api_esqueci_senha_validar():
+async def api_esqueci_senha_validar():
     dados = request.json or {}
     email = normalizar_email(dados.get("email"))
     codigo = (dados.get("codigo") or "").strip()
 
     try:
         nome_banco = dados.get("banco") or obter_banco_requisicao()
-        valido = nome_banco_valido(nome_banco)
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
         limitar_validacao_reset(email)
-        resposta = validar_codigo_reset_senha(nome_banco, email, codigo)
+        resposta = await executar_em_thread(validar_codigo_reset_senha, nome_banco, email, codigo)
         resposta["ok"] = True
         resposta["banco"] = nome_banco
         return responder_json(resposta)
@@ -1642,8 +2053,9 @@ def api_esqueci_senha_validar():
     except (RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
 
+
 @app.route("/api/usuarios/esqueci-senha/redefinir", methods=["POST"])
-def api_esqueci_senha_redefinir():
+async def api_esqueci_senha_redefinir():
     dados = request.json or {}
     email = normalizar_email(dados.get("email"))
     reset_token = (dados.get("resetToken") or "").strip()
@@ -1651,10 +2063,10 @@ def api_esqueci_senha_redefinir():
 
     try:
         nome_banco = dados.get("banco") or obter_banco_requisicao()
-        valido = nome_banco_valido(nome_banco)
+        valido = await executar_em_thread(nome_banco_valido, nome_banco)
         if not valido:
             raise ValueError("Nome de banco inválido.")
-        redefinir_senha_com_token(nome_banco, email, reset_token, nova_senha)
+        await executar_em_thread(redefinir_senha_com_token, nome_banco, email, reset_token, nova_senha)
         return responder_json(
             {
                 "ok": True,
@@ -1664,6 +2076,7 @@ def api_esqueci_senha_redefinir():
         )
     except (ValueError, RuntimeError, MySQLdb.MySQLError) as erro:
         return responder_json({"ok": False, "erro": str(erro)}, 400)
+
 
 @app.route("/api/health", methods=["GET"])
 def healthcheck():
