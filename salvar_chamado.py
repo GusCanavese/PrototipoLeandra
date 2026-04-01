@@ -1093,7 +1093,14 @@ def substituir_clientes(nome_banco, clientes):
 
 def inserir_cliente(nome_banco, cliente):
     preparar_tabela_usuarios(nome_banco)
-    tipo = cliente.get("tipo") or "Cliente"
+    nome_completo = (cliente.get("nomeCompleto") or "").strip()
+    login = (cliente.get("login") or "").strip().lower()
+    senha = (cliente.get("senha") or "").strip()
+    tipo = (cliente.get("tipo") or "").strip() or "Cliente"
+
+    if not nome_completo or not login or not senha or not tipo:
+        raise ValueError("Nome completo, login, senha e tipo de usuário são obrigatórios.")
+
     if tipo == "Técnico":
         tipo = "Advogado"
     if tipo not in {"Cliente", "Advogado", "Administrador"}:
@@ -1106,10 +1113,10 @@ def inserir_cliente(nome_banco, cliente):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
-            cliente["login"],
-            hash_senha(cliente["senha"]),
+            login,
+            hash_senha(senha),
             tipo,
-            cliente.get("nomeCompleto") or None,
+            nome_completo,
             cliente.get("telefone") or None,
             cliente.get("documento") or None,
             normalizar_email(cliente.get("email")) or None,
